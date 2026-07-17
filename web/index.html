@@ -75,11 +75,16 @@
   /* multi-hour block: head drops bottom border; middle continuation cells drop
      BOTH borders so the block is seamless; only the final cell keeps its bottom
      border to close the block. This makes a 3-hour class one continuous block. */
-  table.grid td.evt.head { border-bottom:none; }
-  table.grid td.evt.cont { border-top:none; border-bottom:none; }
-  table.grid td.evt.cont.last { border-bottom:1px solid var(--line); }
+  table.grid td.evt.head, table.grid div.evt.head { border-bottom:none; }
+  table.grid td.evt.cont, table.grid div.evt.cont { border-top:none; border-bottom:none; }
+  table.grid td.evt.cont.last, table.grid div.evt.cont.last { border-bottom:1px solid var(--line); }
   table.grid td.evt code { color:#fff; font-weight:700; }
   table.grid td { height:26px; }
+  /* overlapping classes shown side by side within one hour cell */
+  table.grid td.evt.split-parent { padding:0; }
+  table.grid .evt-split { display:flex; height:100%; }
+  table.grid .evt-split .split-cell { flex:1 1 0; min-width:0; border-right:1px solid rgba(255,255,255,.6); }
+  table.grid .evt-split .split-cell:last-child { border-right:none; }
 </style>
 </head>
 <body>
@@ -177,6 +182,10 @@ function randItem(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
+// courses whose tutorial (TUT) the user marked "not worth attending":
+// those TUTs are left off the timetable (free/break time that may be
+// filled by another class or left empty).
+const uselessTut = new Set();
 
 // In-memory + localStorage cache of fetched course data, keyed by the
 // (year, session, track) combination so re-selecting is instant.
@@ -260,6 +269,16 @@ async function load(){
     return {code, name, sections, combos};
   });
 
+  renderCourseList();
+  const panel = document.getElementById("optPanel");
+  if (panel) panel.hidden = false;
+  const hint = document.getElementById("hint");
+  if (hint) hint.hidden = false;
+}
+
+// Builds (or rebuilds) the left-side course list. Reads uselessTut so that
+// marking a tutorial useless hides its TUT options immediately.
+function renderCourseList(){
   const list = document.getElementById("courseList");
   list.innerHTML = "";
   for (const c of COURSES){
@@ -269,8 +288,21 @@ async function load(){
     head.className = "course-head";
     head.innerHTML = `<code>${c.code}</code> <span class="nm">${c.name}</span>`;
     wrap.appendChild(head);
-    // radio groups for PRA and TUT: pick at most one of each to lock; leave a
-    // group blank to randomize it. LEC is always randomized and not selectable.
+    // course-level "skip tutorial" toggle (only if the course has tutorials)
+    const tutUseless = uselessTut.has(c.code);
+    const hasTut = c.sections.some(s => s.teachMethod === "TUT");
+    if (hasTut){
+      const skipLbl = document.createElement("label");
+      skipLbl.className = "section skip-tut";
+      skipLbl.innerHTML =
+        `<input type="checkbox" class="skipTut" data-code="${c.code}"`+
+        (tutUseless ? " checked" : "")+
+        `> Mark tutorial as not worth attending`;
+      wrap.appendChild(skipLbl);
+    }
+    // radio groups for PRA and TUT: pick at most one of each to lock.
+    // LEC is always randomized and not selectable. When a tutorial is marked
+    // useless it is hidden entirely from the list.
     const tmOrder = {"PRA": 0, "TUT": 1};
     const groups = {};
     for (const s of c.sections){
@@ -279,9 +311,10 @@ async function load(){
     }
     const tms = Object.keys(groups).sort((a,b)=>(tmOrder[a]-tmOrder[b]));
     for (const tm of tms){
+      if (tm === "TUT" && tutUseless) continue; // hide useless tutorials
       const hdr = document.createElement("div");
       hdr.className = "tm-head";
-      hdr.textContent = tm + " (pick one to lock, or leave blank to randomize)";
+      hdr.textContent = tm + " (pick one to lock)";
       wrap.appendChild(hdr);
       const opts = groups[tm].slice().sort((a,b)=>a.name.localeCompare(b.name));
       for (const sec of opts){
@@ -304,10 +337,16 @@ async function load(){
     for (const r of list.querySelectorAll('input[type=radio]'))
       r._wasChecked = r.checked;
   };
-  const panel = document.getElementById("optPanel");
-  if (panel) panel.hidden = false;
-  const hint = document.getElementById("hint");
-  if (hint) hint.hidden = false;
+  // "mark tutorial as not worth attending": update the set, then rebuild the
+  // list so the TUT options hide/show immediately.
+  list.onchange = (e) => {
+    const box = e.target;
+    if (box && box.classList && box.classList.contains("skipTut")){
+      if (box.checked) uselessTut.add(box.dataset.code);
+      else uselessTut.delete(box.dataset.code);
+      renderCourseList();
+    }
+  };
 }
 
 // Returns plan objects. `locked` = the at-most-one LEC and at-most-one PRA the
@@ -329,8 +368,14 @@ function selectedPlan(){
   const plans = [];
   for (const course of COURSES){
     const locked = byCode[course.code] ? byCode[course.code].locked : [];
+    // a course whose tutorial is marked useless gets its TUT left off the
+    // timetable entirely (free/break time), so drop any TUT locks too.
+    const tutUseless = uselessTut.has(course.code);
+    const lockedFiltered = tutUseless
+      ? locked.filter(l => l.tm !== "TUT")
+      : locked;
     // which component types are already satisfied by a locked section?
-    const lockedTypes = new Set(locked.map(l => l.tm));
+    const lockedTypes = new Set(lockedFiltered.map(l => l.tm));
     // pool grouped by component type. PRA/TUT = one option per section.
     // LEC = options are triples of individual lecture meetings (one from each
     // weekly slot) chosen from ANY section, ordered 1st < 2nd < 3rd in the week,
@@ -338,12 +383,13 @@ function selectedPlan(){
     const pool = {};
     for (const sec of course.sections){
       const tm = sec.teachMethod;
+      if (tm === "TUT" && tutUseless) continue; // skip useless tutorials
       if (lockedTypes.has(tm)) continue; // already have this type locked
       if (tm === "LEC"){
         const subj = course.sections.filter(s => s.teachMethod === "LEC");
         pool.LEC = buildLecOptions(subj);
       } else {
-        if (locked.some(l => l.sec.name === sec.name)) continue;
+        if (lockedFiltered.some(l => l.sec.name === sec.name)) continue;
         (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
       }
     }
@@ -364,7 +410,7 @@ function selectedPlan(){
           if (overlaps(all[i], all[j])) return false;
       return true;
     });
-    plans.push({code: course.code, name: course.name, locked, poolTypes: typeKeys, combos});
+    plans.push({code: course.code, name: course.name, locked: lockedFiltered, poolTypes: typeKeys, combos});
   }
   return plans;
 }
@@ -454,8 +500,10 @@ function solve(plans, maxTries){
 // ---- Optimizer ----------------------------------------------------------
 // Scores a clash-free plan by the user's preferences. Lower = better.
 // Penalties (each configurable via opts):
-//   breaks : 1-hour gaps between same-day classes. The 11-12 / 12-1 lunch
-//            window is exempt UNLESS opts.lunch is set (then it counts too).
+//   campus : free (non-class) time on campus across the week, PLUS one unit
+//            per day that has any class (so the optimizer also tries to drop
+//            whole days). The 11-12 / 12-1 lunch window is exempt UNLESS
+//            opts.lunch is set (then it counts too).
 //   nine   : classes that start at 9:00 (early).
 //   five    : classes that run during the 5pm (17:00) hour.
 function scorePlan(plan, opts){
@@ -467,6 +515,10 @@ function scorePlan(plan, opts){
     for (const m of item.ms){
       (byDay[m.day] = byDay[m.day] || []).push({start:m.start, end:m.end});
     }
+  // "minimize free time on campus" also rewards dropping whole days: every
+  // day that has any class adds 1 to the score, so the optimizer prefers
+  // to compress classes into fewer days (free days cost nothing).
+  for (const d of Object.keys(byDay)) score += o.campus * 1;
   for (const d of Object.keys(byDay)){
     const blocks = byDay[d].sort((a,b)=>a.start-b.start);
     // free time on campus = sum of gaps between consecutive classes that day
@@ -564,24 +616,35 @@ function renderPlan(plans, plan, msg){
     html += `<tr><td class="hour">${fmt12(h,0)}</td>`;
     for (const d of DAYS_SHOWN){
       const dayEvs = events[d] || [];
-      const ev = dayEvs.find(e => e.startHour === h);
-      if (ev){
-        // first hour of a block: show label; mark head if it spans >1 hour.
-        // time is shown at the right-middle of the block.
-        const headCls = ev.spanHours > 1 ? "evt head" : "evt";
-        html += `<td class="${headCls}" style="background:${ev.color}">`+
-                `<div class="evt-top"><code>${ev.code}</code></div>`+
-                `<div class="evt-sec">${ev.sec}</div></td>`;
-      } else if (dayEvs.some(e => e.startHour < h && e.startHour + e.spanHours > h)){
-        // continuing hour of a multi-hour block: same colour, no label, no inner
-        // border. The final hour (last row of the span) keeps its bottom border;
-        // middle hours drop both so the block reads as one seamless unit.
-        const cont = dayEvs.find(e => e.startHour < h && e.startHour + e.spanHours > h);
-        const isLast = h === cont.startHour + cont.spanHours - 1;
-        const cls = isLast ? "evt cont last" : "evt cont";
-        html += `<td class="${cls}" style="background:${cont.color}"></td>`;
-      } else {
+      // all events covering this hour (overlapping classes split side-by-side)
+      const covering = dayEvs.filter(e => e.startHour <= h && h < e.startHour + e.spanHours);
+      if (covering.length === 0){
         html += `<td class="empty"></td>`;
+      } else if (covering.length === 1){
+        const ev = covering[0];
+        const isHead = ev.startHour === h;
+        const isLast = h === ev.startHour + ev.spanHours - 1;
+        const cls = "evt" + (isHead && ev.spanHours > 1 ? " head" : "") +
+                   (!isHead ? " cont" + (isLast ? " last" : "") : "");
+        html += `<td class="${cls}" style="background:${ev.color}">`+
+                (isHead ? `<div class="evt-top"><code>${ev.code}</code></div>`+
+                          `<div class="evt-sec">${ev.sec}</div>` : ``)+
+                `</td>`;
+      } else {
+        // two (or more) overlapping classes: render side by side within the cell
+        let inner = `<div class="evt-split">`;
+        for (const ev of covering){
+          const isHead = ev.startHour === h;
+          const isLast = h === ev.startHour + ev.spanHours - 1;
+          const cls = "evt split-cell" + (isHead && ev.spanHours > 1 ? " head" : "") +
+                     (!isHead ? " cont" + (isLast ? " last" : "") : "");
+          inner += `<div class="${cls}" style="background:${ev.color}">`+
+                   (isHead ? `<div class="evt-top"><code>${ev.code}</code></div>`+
+                             `<div class="evt-sec">${ev.sec}</div>` : ``)+
+                   `</div>`;
+        }
+        inner += `</div>`;
+        html += `<td class="evt split-parent">${inner}</td>`;
       }
     }
     html += "</tr>";
