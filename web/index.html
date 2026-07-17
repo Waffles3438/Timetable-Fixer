@@ -88,10 +88,10 @@
 </style>
 </head>
 <body>
-<header><h1>Random Timetable Generator</h1></header>
+<header><h1>Timetable Fixer</h1></header>
 <main>
   <section class="panel">
-    <h2>Courses you must take</h2>
+    <h2>Courses</h2>
     <div class="controls">
       <label>Program
         <select id="selTrack">
@@ -186,6 +186,11 @@ let COURSES = [];
 // those TUTs are left off the timetable (free/break time that may be
 // filled by another class or left empty).
 const uselessTut = new Set();
+// Best plan found across Optimize presses (cumulative): only re-render when a
+// new search beats it. Reset whenever the inputs (locks / options) change.
+let bestSoFar = null;
+let bestSoFarOpts = null;
+let bestSoFarPlans = null;
 
 // In-memory + localStorage cache of fetched course data, keyed by the
 // (year, session, track) combination so re-selecting is instant.
@@ -202,23 +207,51 @@ function cacheKey(){
 // linger after the dropdowns change but before Load is clicked.
 function clearCourses(){
   COURSES = [];
-  document.getElementById("courseList").innerHTML =
-    "<em>Select Program / Year / Semester above, then click Load.</em>";
+  bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
+  const list = document.getElementById("courseList");
+  list.innerHTML = "";
+  // drop any rendered course nodes so stale classes disappear immediately
+  while (list.firstChild) list.removeChild(list.firstChild);
+  list.innerHTML = "<em>Select Program / Year / Semester above, then click Load.</em>";
   document.getElementById("timetable").innerHTML = "";
+  // hide the optimizer panel until courses are loaded again
+  const panel = document.getElementById("optPanel");
+  if (panel) panel.hidden = true;
+  const hint = document.getElementById("hint");
+  if (hint) hint.hidden = true;
+  // reset optimizer options + result for the new selection
+  for (const id of ["optCampus","optLunch","optNine","optFive"])
+    if (document.getElementById(id)) document.getElementById(id).checked = false;
+  const lunchWrap = document.getElementById("lunchWrap");
+  if (lunchWrap) lunchWrap.hidden = true;
+  const info = document.getElementById("optInfo");
+  if (info) info.textContent = "";
 }
 async function load(){
+  // A new program/year/semester is being loaded: reset the optimizer options
+  // and any previously-generated result for the fresh selection.
+  bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
+  for (const id of ["optCampus","optLunch","optNine","optFive"])
+    if (document.getElementById(id)) document.getElementById(id).checked = false;
+  const lunchWrap = document.getElementById("lunchWrap");
+  if (lunchWrap) lunchWrap.hidden = true;
+  const info = document.getElementById("optInfo");
+  if (info) info.textContent = "";
   const key = cacheKey();
+  // remove the previously-generated timetable for the old selection
+  const timetable = document.getElementById("timetable");
+  if (timetable) timetable.innerHTML = "";
   let data = _memCache.get(key) || _lsGet("ttb:"+key);
-  const info = document.getElementById("cacheInfo");
+  const cacheInfo = document.getElementById("cacheInfo");
   if (data){
-    if (info) info.textContent = "";
+    if (cacheInfo) cacheInfo.textContent = "";
   } else {
     try {
       const res = await fetch(key);
       data = await res.json();
       _memCache.set(key, data);
       _lsSet("ttb:"+key, data);
-      if (info) info.textContent = "";
+      if (cacheInfo) cacheInfo.textContent = "";
       } catch(e){
         // fall back to the default bundled dataset
         try {
@@ -226,7 +259,7 @@ async function load(){
           data = await res.json();
         } catch(e2){
           document.getElementById("courseList").innerHTML =
-            "<em>Could not load course data. Run the scraper (or scrape_all.py) first " +
+            "<em>Could not load course data. Run the scraper (or scrape_cache.py) first " +
             "and serve this folder over http (e.g. <code>python -m http.server</code>).</em>";
           return;
         }
@@ -274,12 +307,23 @@ async function load(){
   if (panel) panel.hidden = false;
   const hint = document.getElementById("hint");
   if (hint) hint.hidden = false;
+  // reset the result status for this freshly-loaded selection
+  const status = document.getElementById("status");
+  if (status) status.textContent =
+    "Load courses, then press Optimize to build a timetable.";
 }
 
 // Builds (or rebuilds) the left-side course list. Reads uselessTut so that
 // marking a tutorial useless hides its TUT options immediately.
 function renderCourseList(){
   const list = document.getElementById("courseList");
+  // capture currently-locked sections (so a rebuild from marking one tutorial
+  // useless does NOT wipe locks on other courses' sections)
+  const lockedByCode = {};
+  for (const box of list.querySelectorAll('input[type=radio]:checked')){
+    const code = box.dataset.code, tm = box.dataset.tm, sec = box.dataset.sec;
+    (lockedByCode[code] = lockedByCode[code] || {})[tm] = sec;
+  }
   list.innerHTML = "";
   for (const c of COURSES){
     const wrap = document.createElement("div");
@@ -288,21 +332,10 @@ function renderCourseList(){
     head.className = "course-head";
     head.innerHTML = `<code>${c.code}</code> <span class="nm">${c.name}</span>`;
     wrap.appendChild(head);
-    // course-level "skip tutorial" toggle (only if the course has tutorials)
-    const tutUseless = uselessTut.has(c.code);
-    const hasTut = c.sections.some(s => s.teachMethod === "TUT");
-    if (hasTut){
-      const skipLbl = document.createElement("label");
-      skipLbl.className = "section skip-tut";
-      skipLbl.innerHTML =
-        `<input type="checkbox" class="skipTut" data-code="${c.code}"`+
-        (tutUseless ? " checked" : "")+
-        `> Mark tutorial as not worth attending`;
-      wrap.appendChild(skipLbl);
-    }
     // radio groups for PRA and TUT: pick at most one of each to lock.
     // LEC is always randomized and not selectable. When a tutorial is marked
     // useless it is hidden entirely from the list.
+    const tutUseless = uselessTut.has(c.code);
     const tmOrder = {"PRA": 0, "TUT": 1};
     const groups = {};
     for (const s of c.sections){
@@ -311,23 +344,42 @@ function renderCourseList(){
     }
     const tms = Object.keys(groups).sort((a,b)=>(tmOrder[a]-tmOrder[b]));
     for (const tm of tms){
-      if (tm === "TUT" && tutUseless) continue; // hide useless tutorials
       const hdr = document.createElement("div");
       hdr.className = "tm-head";
       hdr.textContent = tm + " (pick one to lock)";
       wrap.appendChild(hdr);
+      // "Mark tutorial as not worth attending" sits at the TOP of the TUT
+      // list. It is never hidden by its own selection. When checked, the
+      // TUT#### radio options below are hidden but the header + this
+      // checkbox remain visible.
+      if (tm === "TUT"){
+        const skipLbl = document.createElement("label");
+        skipLbl.className = "section skip-tut";
+        skipLbl.innerHTML =
+          `<input type="checkbox" class="skipTut" data-code="${c.code}"`+
+          (tutUseless ? " checked" : "")+
+          `> Mark tutorial as not worth attending`;
+        wrap.appendChild(skipLbl);
+      }
+      if (tm === "TUT" && tutUseless) continue; // hide TUT#### options only
       const opts = groups[tm].slice().sort((a,b)=>a.name.localeCompare(b.name));
+      const kept = lockedByCode[c.code] && lockedByCode[c.code][tm];
       for (const sec of opts){
         const lbl = document.createElement("label");
         lbl.className = "section";
+        const isLocked = sec.name === kept;
         lbl.innerHTML =
-          `<input type="radio" name="${c.code}-${tm}" data-code="${c.code}" data-sec="${sec.name}" data-tm="${tm}"> `+
-          `<span class="tm">${tm}</span> ${sec.name}`;
+          `<input type="radio" name="${c.code}-${tm}" data-code="${c.code}" data-sec="${sec.name}" data-tm="${tm}"`+
+          (isLocked ? " checked" : "")+
+          `> <span class="tm">${tm}</span> ${sec.name}`;
         wrap.appendChild(lbl);
       }
     }
     list.appendChild(wrap);
   }
+  // keep the unselect-toggle state in sync for freshly-built radios
+  for (const r of list.querySelectorAll('input[type=radio]'))
+    r._wasChecked = r.checked;
   // clicking an already-selected radio again toggles it off (unselect)
   list.onclick = (e) => {
     const box = e.target;
@@ -336,6 +388,7 @@ function renderCourseList(){
     }
     for (const r of list.querySelectorAll('input[type=radio]'))
       r._wasChecked = r.checked;
+    bestSoFar = null; // locks changed: restart cumulative search
   };
   // "mark tutorial as not worth attending": update the set, then rebuild the
   // list so the TUT options hide/show immediately.
@@ -345,6 +398,7 @@ function renderCourseList(){
       if (box.checked) uselessTut.add(box.dataset.code);
       else uselessTut.delete(box.dataset.code);
       renderCourseList();
+      bestSoFar = null; // tutorials changed: restart cumulative search
     }
   };
 }
@@ -552,7 +606,7 @@ function scorePlan(plan, opts){
 // Honours the same locked sections as solve(). Falls back to a random
 // clash-free plan if nothing samples well within the time budget.
 function solveBest(plans, iterations, opts){
-  const deadline = Date.now() + 4000;
+  const deadline = Date.now() + 9000;
   let best = null, bestScore = Infinity;
   let samples = 0;
   // Each tick keeps trying (up to a few hundred attempts) until it lands a
@@ -657,6 +711,8 @@ function renderPlan(plans, plan, msg){
 
 // Sample many clash-free plans and keep the one that best satisfies the
 // checked optimizer preferences. Falls back to a random clash-free plan.
+// Cumulative: the best plan across all Optimize presses is remembered, so
+// pressing again can only improve (never regress) the shown timetable.
 function optimize(){
   const plans = selectedPlan();
   const status = document.getElementById("status");
@@ -673,7 +729,7 @@ function optimize(){
     nine:   document.getElementById("optNine").checked  ? 1 : 0,
     five:   document.getElementById("optFive").checked  ? 1 : 0,
   };
-  const best = solveBest(plans, 400, opts);
+  const best = solveBest(plans, 900, opts);
   if (!best){
     out.innerHTML = "";
     status.textContent = "Could not build a clash-free timetable. Either two sections " +
@@ -681,9 +737,19 @@ function optimize(){
       "Check the sections you locked in.";
     return;
   }
-  const score = scorePlan(best, opts);
+  // If the inputs (locks or options) changed since the remembered best, start
+  // the cumulative search fresh; otherwise only adopt a strictly better plan.
+  const optsKey = JSON.stringify(opts);
+  const plansKey = JSON.stringify(plans.map(p => p.locked.map(l => l.tm + l.sec.name)));
+  if (!bestSoFar || optsKey !== bestSoFarOpts || plansKey !== bestSoFarPlans){
+    bestSoFar = best; bestSoFarOpts = optsKey; bestSoFarPlans = plansKey;
+  } else {
+    const s = scorePlan(best, opts);
+    if (s < scorePlan(bestSoFar, opts)) bestSoFar = best;
+  }
+  const score = scorePlan(bestSoFar, opts);
   if (info) info.textContent = "optimized (penalty " + score + ")";
-  renderPlan(plans, best, "Click Optimize for another arrangement.");
+  renderPlan(plans, bestSoFar, "Click Optimize for another arrangement.");
 }
 
 document.getElementById("optimize").addEventListener("click", optimize);
@@ -693,9 +759,11 @@ document.getElementById("optCampus").addEventListener("change", (e) => {
   const wrap = document.getElementById("lunchWrap");
   if (wrap) wrap.hidden = !e.target.checked;
 });
-// changing any dropdown clears the stale course list; only Load fetches + shows
+// Changing a dropdown does NOT clear the shown courses or the generated
+// timetable. The currently-displayed selection stays until the user presses
+// Load to fetch a NEW program/year/semester.
 for (const id of ["selTrack","selYear","selSession"])
-   document.getElementById(id).addEventListener("change", clearCourses);
+   document.getElementById(id).addEventListener("change", () => {});
 clearCourses();
 </script>
 </body>
