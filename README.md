@@ -1,4 +1,4 @@
-so basically being on uoft makes me sad
+so basically being at uoft makes me sad
 
 being at home makes me happy
 
