@@ -143,13 +143,7 @@
 
 <script>
 const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const DAY_MS = 24*3600*1000;
 
-function fmt(ms){
-  let t = Math.floor(ms/60000);
-  let h = Math.floor(t/60)%24, m = t%60;
-  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
-}
 // 12-hour clock, e.g. 9:00 AM, 1:30 PM
 function fmt12(hour, minute){
   let h = ((hour % 24) + 24) % 24;
@@ -172,13 +166,9 @@ function meetings(sec){
 function overlaps(a, b){
   return a.day===b.day && a.start < b.end && b.start < a.end;
 }
-function weekTime(m){
-  return m.day * DAY_MS + m.start;
-}
 function clashFree(blocks, chosen){
   return !blocks.some(m => chosen.some(c => overlaps(m, c)));
 }
-function randItem(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
@@ -203,23 +193,12 @@ function cacheKey(){
   const t = document.getElementById("selTrack").value;
   return `data/${t}-${y}-${s}.json`;
 }
-// Clear the course list so stale courses from a previous selection don't
-// linger after the dropdowns change but before Load is clicked.
-function clearCourses(){
-  COURSES = [];
+// Reset the optimizer checkboxes, lunch sub-option, result text, the
+// cumulative best plan, and the memo caches. Shared by clearCourses() (fresh
+// startup) and load() (new program/year/semester).
+function resetOptimizerState(){
   bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
-  const list = document.getElementById("courseList");
-  list.innerHTML = "";
-  // drop any rendered course nodes so stale classes disappear immediately
-  while (list.firstChild) list.removeChild(list.firstChild);
-  list.innerHTML = "<em>Select Program / Year / Semester above, then click Load.</em>";
-  document.getElementById("timetable").innerHTML = "";
-  // hide the optimizer panel until courses are loaded again
-  const panel = document.getElementById("optPanel");
-  if (panel) panel.hidden = true;
-  const hint = document.getElementById("hint");
-  if (hint) hint.hidden = true;
-  // reset optimizer options + result for the new selection
+  _lecOptCache.clear(); _comboCache.clear();
   for (const id of ["optCampus","optLunch","optNine","optFive"])
     if (document.getElementById(id)) document.getElementById(id).checked = false;
   const lunchWrap = document.getElementById("lunchWrap");
@@ -227,16 +206,24 @@ function clearCourses(){
   const info = document.getElementById("optInfo");
   if (info) info.textContent = "";
 }
+// Clear the course list so stale courses from a previous selection don't
+// linger after the dropdowns change but before Load is clicked.
+function clearCourses(){
+  COURSES = [];
+  resetOptimizerState();
+  const list = document.getElementById("courseList");
+  list.innerHTML = "<em>Select Program / Year / Semester above, then click Load.</em>";
+  document.getElementById("timetable").innerHTML = "";
+  // hide the optimizer panel until courses are loaded again
+  const panel = document.getElementById("optPanel");
+  if (panel) panel.hidden = true;
+  const hint = document.getElementById("hint");
+  if (hint) hint.hidden = true;
+}
 async function load(){
-  // A new program/year/semester is being loaded: reset the optimizer options
+  // A new program/year/semester is being loaded: reset the optimizer state
   // and any previously-generated result for the fresh selection.
-  bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
-  for (const id of ["optCampus","optLunch","optNine","optFive"])
-    if (document.getElementById(id)) document.getElementById(id).checked = false;
-  const lunchWrap = document.getElementById("lunchWrap");
-  if (lunchWrap) lunchWrap.hidden = true;
-  const info = document.getElementById("optInfo");
-  if (info) info.textContent = "";
+  resetOptimizerState();
   const key = cacheKey();
   // remove the previously-generated timetable for the old selection
   const timetable = document.getElementById("timetable");
@@ -447,23 +434,32 @@ function selectedPlan(){
         (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
       }
     }
-    // precompute clash-free combos over the pool (one option per type)
+    // precompute clash-free combos over the pool (one option per type).
+    // Result depends only on the pool contents + which types are locked +
+    // tutorial-useless state, all captured in a signature key.
     const typeKeys = Object.keys(pool);
-    let combos = [[]];
-    for (const tm of typeKeys){
-      const opts = pool[tm];
-      const next = [];
-      for (const c of combos) for (const o of opts) next.push(c.concat([o]));
-      combos = next;
+    const comboSig = course.code + "|" + tutUseless + "|" +
+      [...lockedTypes].sort().join(",") + "|" +
+      typeKeys.map(tm => tm + ":" + pool[tm].length).join(",");
+    let combos = _comboCache.get(comboSig);
+    if (!combos){
+      combos = [[]];
+      for (const tm of typeKeys){
+        const opts = pool[tm];
+        const next = [];
+        for (const c of combos) for (const o of opts) next.push(c.concat([o]));
+        combos = next;
+      }
+      combos = combos.filter(combo => {
+        const all = [];
+        for (const o of combo) for (const m of o.ms) all.push(m);
+        for (let i=0;i<all.length;i++)
+          for (let j=i+1;j<all.length;j++)
+            if (overlaps(all[i], all[j])) return false;
+        return true;
+      });
+      _comboCache.set(comboSig, combos);
     }
-    combos = combos.filter(combo => {
-      const all = [];
-      for (const o of combo) for (const m of o.ms) all.push(m);
-      for (let i=0;i<all.length;i++)
-        for (let j=i+1;j<all.length;j++)
-          if (overlaps(all[i], all[j])) return false;
-      return true;
-    });
     plans.push({code: course.code, name: course.name, locked: lockedFiltered, poolTypes: typeKeys, combos});
   }
   return plans;
@@ -476,7 +472,20 @@ function selectedPlan(){
 // would look like duplicate weekly ranks), the three chosen meetings must also
 // be on distinct days and non-clashing. Sections may repeat or differ per
 // position.
+// Cache of lecture options keyed by a signature of the input sections, so
+// repeated Optimize presses (which call selectedPlan -> buildLecOptions for
+// every course) skip rebuilding the identical Cartesian product.
+const _lecOptCache = new Map();
+// Cache of per-course clash-free section combos, keyed by a signature of the
+// pool + locked types + tutorial-useless state. Reused across Optimize presses
+// so unchanged courses skip rebuilding the identical Cartesian product.
+const _comboCache = new Map();
+function _lecSig(secs){
+  return secs.map(s => s.name + ":" + (s.meetingTimes||[]).map(m=>m.day+","+m.start+","+m.end).join("|")).join(";");
+}
 function buildLecOptions(lecSections){
+  const sig = _lecSig(lecSections);
+  if (_lecOptCache.has(sig)) return _lecOptCache.get(sig);
   // scrape.py already stores each section's meetingTimes chronologically
   // (Mon->Fri), so meeting index 0 = 1st lecture of the week, etc.
   const all = lecSections.map(sec => ({sec, ms: meetings(sec)}))
@@ -504,21 +513,21 @@ function buildLecOptions(lecSections){
     }
   };
   rec(0);
-  return opts.map(comb => ({
+  const result = opts.map(comb => ({
     lec: true,
     sec: { name: "LEC*" },
     ms: comb.map(p => p.m),
     secs: comb.map(p => p.sec.name)
   }));
+  _lecOptCache.set(sig, result);
+  return result;
 }
 
 // Backtracking solver: place each course's LOCKED sections first (fixed), then
 // randomly fill its remaining component types without clashing. Gives up
 // gracefully if the locked sections themselves clash or nothing fits.
 function solve(plans, maxTries){
-  const deadline = Date.now() + 4000; // never hang the browser
   for (let attempt=0; attempt<maxTries; attempt++){
-    if (Date.now() > deadline) break;
     const order = shuffle(plans.slice());
     const plan = [];
     const chosen = [];
@@ -556,8 +565,10 @@ function solve(plans, maxTries){
 // Penalties (each configurable via opts):
 //   campus : free (non-class) time on campus across the week, PLUS one unit
 //            per day that has any class (so the optimizer also tries to drop
-//            whole days). The 11-12 / 12-1 lunch window is exempt UNLESS
-//            opts.lunch is set (then it counts too).
+//            whole days).
+//   lunch  : when set, reward keeping >=1 free hour inside the 11:00-13:00
+//            window; penalize only the portion of that window taken by classes
+//            (a schedule with a full lunch break gets no lunch penalty).
 //   nine   : classes that start at 9:00 (early).
 //   five    : classes that run during the 5pm (17:00) hour.
 function scorePlan(plan, opts){
@@ -576,21 +587,33 @@ function scorePlan(plan, opts){
   for (const d of Object.keys(byDay)){
     const blocks = byDay[d].sort((a,b)=>a.start-b.start);
     // free time on campus = sum of gaps between consecutive classes that day
-    // (time present but not in class). Each gap may be exempt if it lies
-    // inside the 11-1 lunch window AND "treat lunch as free" is OFF.
+    // (time present but not in class).
     let free = 0;
     for (let i=0; i<blocks.length-1; i++){
       const gapStart = blocks[i].end;
       const gapEnd = blocks[i+1].start;
-      let gapH = (gapEnd - gapStart) / 3600000;
-      if (!o.lunch){
-        const lunchStart = 11*3600000, lunchEnd = 13*3600000;
-        const over = Math.min(gapEnd, lunchEnd) - Math.max(gapStart, lunchStart);
-        if (over > 0) gapH -= over / 3600000;
-      }
+      const gapH = (gapEnd - gapStart) / 3600000;
       if (gapH > 0) free += gapH;
     }
     if (free > 0) score += o.campus * free;
+    // "Provide time for lunch": reward keeping at least 1 free hour inside the
+    // 11:00-13:00 window. If >=1h of that window is free, no penalty. Otherwise
+    // penalize the occupied portion (the part of the window taken by classes),
+    // so the optimizer prefers schedules that leave a real lunch break.
+    if (o.lunch){
+      const lunchStart = 11*3600000, lunchEnd = 13*3600000;
+      const windowMs = lunchEnd - lunchStart;
+      // free time inside the lunch window = window minus class-occupied parts
+      let occupied = 0;
+      for (const b of blocks){
+        const over = Math.min(b.end, lunchEnd) - Math.max(b.start, lunchStart);
+        if (over > 0) occupied += over;
+      }
+      const lunchFree = (windowMs - occupied) / 3600000;
+      if (lunchFree < 1){
+        score += o.campus * ((1 - lunchFree)); // penalty for the missing lunch time
+      }
+    }
     for (let i=0; i<blocks.length; i++){
       const b = blocks[i];
       // 9am start penalty (only the starting hour 9:00)
