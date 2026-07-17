@@ -1,0 +1,52 @@
+{
+  "combos": [
+    {
+      "file": "computer-1-fall.json",
+      "program": "computer",
+      "year": "1",
+      "session": "fall"
+    },
+    {
+      "file": "computer-1-winter.json",
+      "program": "computer",
+      "year": "1",
+      "session": "winter"
+    },
+    {
+      "file": "computer-2-fall.json",
+      "program": "computer",
+      "year": "2",
+      "session": "fall"
+    },
+    {
+      "file": "computer-2-winter.json",
+      "program": "computer",
+      "year": "2",
+      "session": "winter"
+    },
+    {
+      "file": "electrical-1-fall.json",
+      "program": "electrical",
+      "year": "1",
+      "session": "fall"
+    },
+    {
+      "file": "electrical-1-winter.json",
+      "program": "electrical",
+      "year": "1",
+      "session": "winter"
+    },
+    {
+      "file": "electrical-2-fall.json",
+      "program": "electrical",
+      "year": "2",
+      "session": "fall"
+    },
+    {
+      "file": "electrical-2-winter.json",
+      "program": "electrical",
+      "year": "2",
+      "session": "winter"
+    }
+  ]
+}

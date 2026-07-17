@@ -13,7 +13,6 @@ CALENDAR_BASE = "https://engineering.calendar.utoronto.ca"
 
 # Map a friendly program name to its calendar section slug.
 PROGRAM_SLUG = {
-    "ece": "Electrical-and-Computer-Engineering",
     "electrical": "Electrical-and-Computer-Engineering",
     "computer": "Electrical-and-Computer-Engineering",
     "chemical": "Chemical-Engineering-and-Applied-Chemistry",
@@ -21,8 +20,6 @@ PROGRAM_SLUG = {
     "mechanical": "Mechanical-Engineering",
     "industrial": "Industrial-Engineering",
     "materials": "Materials-Science-and-Engineering",
-    "aerospace": "Aerospace-Science-and-Engineering",
-    "biomedical": "Biomaterials-and-Biomedical-Engineering",
     "mineral": "Mineral-Engineering",
 }
 

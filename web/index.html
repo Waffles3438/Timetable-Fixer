@@ -11,8 +11,8 @@
          margin:0; background:var(--bg); color:#222; }
   header { background:var(--accent); color:#fff; padding:16px 20px; }
   header h1 { margin:0; font-size:1.25rem; }
-  main { max-width:980px; margin:0 auto; padding:20px; display:grid;
-         grid-template-columns: 320px 1fr; gap:20px; }
+  main { max-width:1400px; margin:0 auto; padding:24px 28px; display:grid;
+         grid-template-columns: 300px 1fr; gap:24px; align-items:start; }
   .panel { background:var(--card); border:1px solid var(--line); border-radius:10px;
            padding:16px; }
   h2 { font-size:1rem; margin-top:0; }
@@ -22,8 +22,8 @@
   .course code { font-weight:600; }
   .course .nm { color:#666; font-size:.8rem; font-weight:400; }
   .tm-head { font-size:.76rem; font-weight:600; color:#666; margin:6px 0 2px; }
-  .section { display:flex; align-items:center; gap:6px; padding:2px 0 2px 12px;
-             font-size:.85rem; }
+  .section { display:flex; align-items:center; gap:8px; padding:3px 0 3px 14px;
+             font-size:.88rem; }
   .section .tm { display:inline-block; min-width:34px; color:#0d6efd;
                  font-size:.72rem; font-weight:600; }
   button { background:var(--accent); color:#fff; border:none; border-radius:8px;
@@ -31,15 +31,53 @@
   button:hover { filter:brightness(1.05); }
   button.ghost { background:#6c757d; }
   .actions { display:flex; gap:10px; margin-top:12px; }
-  table { border-collapse:collapse; width:100%; font-size:.85rem; }
-  th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; }
+  .opt { margin-top:14px; padding:12px 14px; background:#f6f8fa;
+         border:1px solid var(--line); border-radius:8px; }
+  .opt[hidden] { display:none; }
+  .opt-title { font-weight:600; font-size:.82rem; color:#444; margin-bottom:6px; }
+   .opt label { display:flex; align-items:center; gap:6px; font-size:.84rem;
+                 padding:2px 0; cursor:pointer; }
+   .opt-sub { padding:2px 0 2px 22px; }
+   .opt-sub[hidden] { display:none; }
+  .opt button { background:var(--accent); color:#fff; border:none;
+                border-radius:8px; padding:7px 14px; font-weight:600;
+                cursor:pointer; margin-top:8px; }
+  .opt button:hover { filter:brightness(1.05); }
+  .controls { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px;
+              margin-bottom:12px; padding:10px 12px; background:#f6f8fa;
+              border:1px solid var(--line); border-radius:8px; }
+  .controls label { display:flex; flex-direction:column; font-size:.78rem;
+                     font-weight:600; color:#555; gap:2px; }
+  .controls select { padding:4px 6px; border:1px solid var(--line);
+                     border-radius:6px; font-size:.85rem; }
+  .controls button { background:var(--accent); color:#fff; border:none;
+                      border-radius:8px; padding:7px 14px; font-weight:600;
+                      cursor:pointer; }
+  .controls button:hover { filter:brightness(1.05); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; }
   th { background:#eef1f5; }
   .daycol { font-weight:600; background:#eef1f5; white-space:nowrap; }
-  .status { margin-top:10px; font-size:.9rem; color:#444; }
-  .legend { font-size:.78rem; color:#666; margin-top:8px; }
-  table.grid td.hour { background:#eef1f5; font-weight:600; text-align:right;
-                       white-space:nowrap; color:#555; }
-  table.grid td.evt { color:#fff; vertical-align:top; border-radius:4px; }
+  .status { margin-top:12px; font-size:.95rem; color:#444; }
+  .legend { font-size:.8rem; color:#666; margin-top:10px; }
+  table.grid thead th { text-align:center; font-size:1rem; padding:10px; }
+  table.grid td.hour { background:#eef1f5; font-weight:600;
+                      text-align:right; vertical-align:top;
+                      white-space:nowrap; color:#555;
+                      height:54px; box-sizing:border-box; padding:5px 8px; font-size:.82rem; }
+  table.grid td { height:54px; box-sizing:border-box; }
+  table.grid td.empty { height:22px; }
+  table.grid td.evt { color:#fff; vertical-align:top; position:relative;
+                      padding:8px 9px; font-size:.85rem; line-height:1.25; }
+  table.grid td.evt .evt-top { font-weight:600; margin-bottom:2px; }
+  table.grid td.evt .evt-sec { font-weight:500; font-size:.78rem; opacity:.92; }
+  table.grid td.evt code { font-weight:700; font-size:.92rem; }
+  /* multi-hour block: head drops bottom border; middle continuation cells drop
+     BOTH borders so the block is seamless; only the final cell keeps its bottom
+     border to close the block. This makes a 3-hour class one continuous block. */
+  table.grid td.evt.head { border-bottom:none; }
+  table.grid td.evt.cont { border-top:none; border-bottom:none; }
+  table.grid td.evt.cont.last { border-bottom:1px solid var(--line); }
   table.grid td.evt code { color:#fff; font-weight:700; }
   table.grid td { height:26px; }
 </style>
@@ -49,20 +87,51 @@
 <main>
   <section class="panel">
     <h2>Courses you must take</h2>
-    <div id="courseList"><em>Loading courses.json…</em></div>
-    <div class="actions">
-      <button id="generate">Generate random timetable</button>
-      <button id="reroll" class="ghost">Reroll</button>
+    <div class="controls">
+      <label>Program
+        <select id="selTrack">
+          <option value="computer" selected>Computer</option>
+          <option value="electrical">Electrical</option>
+        </select>
+      </label>
+      <label>Year
+        <select id="selYear">
+          <option value="1">1st</option>
+          <option value="2" selected>2nd</option>
+          <option value="3">3rd</option>
+          <option value="4">4th</option>
+        </select>
+      </label>
+      <label>Semester
+        <select id="selSession">
+          <option value="fall" selected>Fall 2026</option>
+          <option value="winter">Winter 2027</option>
+        </select>
+      </label>
+      <button id="loadData">Load</button>
+      <span id="cacheInfo" class="legend"></span>
     </div>
-    <div class="legend">Check the exact lecture / tutorial / practical
-      sections you must attend. Locked sections stay fixed; any remaining
-      component types are filled in randomly without clashes. Click Reroll
-      for another arrangement.</div>
+    <div id="courseList"><em>Loading courses…</em></div>
+    <div class="opt" id="optPanel" hidden>
+      <div class="opt-title">Optimize for:</div>
+      <label><input type="checkbox" id="optCampus"> Minimize free time on campus</label>
+      <div class="opt-sub" id="lunchWrap" hidden>
+        <label><input type="checkbox" id="optLunch"> Provide time for lunch</label>
+      </div>
+      <label><input type="checkbox" id="optNine"> Fewer 9:00 AM classes</label>
+      <label><input type="checkbox" id="optFive"> Fewer 5:00 PM classes</label>
+      <button id="optimize">Optimize</button>
+      <span id="optInfo" class="legend"></span>
+    </div>
+    <div class="legend" id="hint" hidden>Check the exact lecture / tutorial / practical
+      sections you must attend. Locked sections stay fixed; the rest is filled
+      in and the timetable is <b>optimized</b> to best fit the preferences above.
+      Change any checkbox or click <b>Optimize</b> to re-search.</div>
   </section>
 
   <section class="panel">
     <h2>Generated timetable</h2>
-    <div id="status" class="status">Select courses and click generate.</div>
+    <div id="status" class="status">Load courses, then press Optimize to build a timetable.</div>
     <div id="timetable"></div>
   </section>
 </main>
@@ -75,6 +144,13 @@ function fmt(ms){
   let t = Math.floor(ms/60000);
   let h = Math.floor(t/60)%24, m = t%60;
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
+}
+// 12-hour clock, e.g. 9:00 AM, 1:30 PM
+function fmt12(hour, minute){
+  let h = ((hour % 24) + 24) % 24;
+  const ampm = h < 12 ? "AM" : "PM";
+  let h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ":" + String(minute).padStart(2,"0") + " " + ampm;
 }
 function meetings(sec){
   const out = [];
@@ -91,6 +167,9 @@ function meetings(sec){
 function overlaps(a, b){
   return a.day===b.day && a.start < b.end && b.start < a.end;
 }
+function weekTime(m){
+  return m.day * DAY_MS + m.start;
+}
 function clashFree(blocks, chosen){
   return !blocks.some(m => chosen.some(c => overlaps(m, c)));
 }
@@ -99,15 +178,50 @@ function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
 
+// In-memory + localStorage cache of fetched course data, keyed by the
+// (year, session, track) combination so re-selecting is instant.
+const _memCache = new Map();
+function _lsGet(k){ try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } }
+function _lsSet(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+function cacheKey(){
+  const y = document.getElementById("selYear").value;
+  const s = document.getElementById("selSession").value;
+  const t = document.getElementById("selTrack").value;
+  return `data/${t}-${y}-${s}.json`;
+}
+// Clear the course list so stale courses from a previous selection don't
+// linger after the dropdowns change but before Load is clicked.
+function clearCourses(){
+  COURSES = [];
+  document.getElementById("courseList").innerHTML =
+    "<em>Select Program / Year / Semester above, then click Load.</em>";
+  document.getElementById("timetable").innerHTML = "";
+}
 async function load(){
-  let data;
-  try {
-    const res = await fetch("courses.json");
-    data = await res.json();
-  } catch(e){
-    document.getElementById("courseList").innerHTML =
-      "<em>Could not load courses.json. Run the scraper first and serve this folder over http (e.g. <code>python -m http.server</code>).</em>";
-    return;
+  const key = cacheKey();
+  let data = _memCache.get(key) || _lsGet("ttb:"+key);
+  const info = document.getElementById("cacheInfo");
+  if (data){
+    if (info) info.textContent = "";
+  } else {
+    try {
+      const res = await fetch(key);
+      data = await res.json();
+      _memCache.set(key, data);
+      _lsSet("ttb:"+key, data);
+      if (info) info.textContent = "";
+      } catch(e){
+        // fall back to the default bundled dataset
+        try {
+          const res = await fetch("courses.json");
+          data = await res.json();
+        } catch(e2){
+          document.getElementById("courseList").innerHTML =
+            "<em>Could not load course data. Run the scraper (or scrape_all.py) first " +
+            "and serve this folder over http (e.g. <code>python -m http.server</code>).</em>";
+          return;
+        }
+      }
   }
   // group sections by course code
   const byCode = {};
@@ -190,6 +304,10 @@ async function load(){
     for (const r of list.querySelectorAll('input[type=radio]'))
       r._wasChecked = r.checked;
   };
+  const panel = document.getElementById("optPanel");
+  if (panel) panel.hidden = false;
+  const hint = document.getElementById("hint");
+  if (hint) hint.hidden = false;
 }
 
 // Returns plan objects. `locked` = the at-most-one LEC and at-most-one PRA the
@@ -213,15 +331,23 @@ function selectedPlan(){
     const locked = byCode[course.code] ? byCode[course.code].locked : [];
     // which component types are already satisfied by a locked section?
     const lockedTypes = new Set(locked.map(l => l.tm));
-    // pool = remaining sections grouped by type, excluding locked ones
+    // pool grouped by component type. PRA/TUT = one option per section.
+    // LEC = options are triples of individual lecture meetings (one from each
+    // weekly slot) chosen from ANY section, ordered 1st < 2nd < 3rd in the week,
+    // non-clashing. This lets lectures be mixed across sections.
     const pool = {};
     for (const sec of course.sections){
-      if (locked.some(l => l.sec.name === sec.name)) continue;
       const tm = sec.teachMethod;
       if (lockedTypes.has(tm)) continue; // already have this type locked
-      (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
+      if (tm === "LEC"){
+        const subj = course.sections.filter(s => s.teachMethod === "LEC");
+        pool.LEC = buildLecOptions(subj);
+      } else {
+        if (locked.some(l => l.sec.name === sec.name)) continue;
+        (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
+      }
     }
-    // precompute clash-free combos over the pool (one per remaining type)
+    // precompute clash-free combos over the pool (one option per type)
     const typeKeys = Object.keys(pool);
     let combos = [[]];
     for (const tm of typeKeys){
@@ -241,6 +367,49 @@ function selectedPlan(){
     plans.push({code: course.code, name: course.name, locked, poolTypes: typeKeys, combos});
   }
   return plans;
+}
+
+// Build lecture options. "1st / 2nd / 3rd lecture of the week" means a
+// section's own 1st, 2nd, 3rd meeting in its sequence (e.g. a section meeting
+// Mon9, Mon18, Tue10 has its 2nd lecture at Mon18). So we pick ONE section per
+// POSITION independently. To avoid two lectures landing on the same day (which
+// would look like duplicate weekly ranks), the three chosen meetings must also
+// be on distinct days and non-clashing. Sections may repeat or differ per
+// position.
+function buildLecOptions(lecSections){
+  // scrape.py already stores each section's meetingTimes chronologically
+  // (Mon->Fri), so meeting index 0 = 1st lecture of the week, etc.
+  const all = lecSections.map(sec => ({sec, ms: meetings(sec)}))
+                         .filter(o => o.ms.length);
+  if (!all.length) return [];
+  const count = Math.max(...all.map(o => o.ms.length));
+  // positions[p] = sections' p-th (chronological) meeting {sec, m}
+  const positions = [];
+  for (let p=0; p<count; p++){
+    positions[p] = [];
+    for (const o of all){
+      if (p < o.ms.length) positions[p].push({sec: o.sec, m: o.ms[p]});
+    }
+  }
+  const opts = [];
+  const chosen = [];
+  const rec = (p) => {
+    if (p === count){ opts.push(chosen.slice()); return; }
+    for (const cand of positions[p]){
+      if (chosen.some(c => c.m.day === cand.m.day)) continue;   // distinct days
+      if (chosen.some(c => overlaps(c.m, cand.m))) continue;    // non-clash
+      chosen.push(cand);
+      rec(p+1);
+      chosen.pop();
+    }
+  };
+  rec(0);
+  return opts.map(comb => ({
+    lec: true,
+    sec: { name: "LEC*" },
+    ms: comb.map(p => p.m),
+    secs: comb.map(p => p.sec.name)
+  }));
 }
 
 // Backtracking solver: place each course's LOCKED sections first (fixed), then
@@ -264,10 +433,12 @@ function solve(plans, maxTries){
       if (c.poolTypes.length){
         const combos = shuffle(c.combos.slice());
         let placed = null;
+        const lockedMs = c.locked.flatMap(l => l.ms);
         for (const combo of combos){
           const blocks = [];
           for (const o of combo) for (const m of o.ms) blocks.push(m);
-          if (clashFree(blocks, chosen)){ placed = combo; break; }
+          // combo must not clash with other courses NOR this course's own locked sections
+          if (clashFree(blocks, chosen) && clashFree(blocks, lockedMs)){ placed = combo; break; }
         }
         if (!placed){ ok = false; break; }
         for (const o of placed) pick.push(o);
@@ -280,23 +451,77 @@ function solve(plans, maxTries){
   return null;
 }
 
-function generate(){
-  const plans = selectedPlan();
+// ---- Optimizer ----------------------------------------------------------
+// Scores a clash-free plan by the user's preferences. Lower = better.
+// Penalties (each configurable via opts):
+//   breaks : 1-hour gaps between same-day classes. The 11-12 / 12-1 lunch
+//            window is exempt UNLESS opts.lunch is set (then it counts too).
+//   nine   : classes that start at 9:00 (early).
+//   five    : classes that run during the 5pm (17:00) hour.
+function scorePlan(plan, opts){
+  const o = Object.assign({campus:1, nine:1, five:1, lunch:0}, opts||{});
+  let score = 0;
+  // gather per-day blocks: {start, end}
+  const byDay = {};
+  for (const p of plan) for (const item of p.pick)
+    for (const m of item.ms){
+      (byDay[m.day] = byDay[m.day] || []).push({start:m.start, end:m.end});
+    }
+  for (const d of Object.keys(byDay)){
+    const blocks = byDay[d].sort((a,b)=>a.start-b.start);
+    // free time on campus = sum of gaps between consecutive classes that day
+    // (time present but not in class). Each gap may be exempt if it lies
+    // inside the 11-1 lunch window AND "treat lunch as free" is OFF.
+    let free = 0;
+    for (let i=0; i<blocks.length-1; i++){
+      const gapStart = blocks[i].end;
+      const gapEnd = blocks[i+1].start;
+      let gapH = (gapEnd - gapStart) / 3600000;
+      if (!o.lunch){
+        const lunchStart = 11*3600000, lunchEnd = 13*3600000;
+        const over = Math.min(gapEnd, lunchEnd) - Math.max(gapStart, lunchStart);
+        if (over > 0) gapH -= over / 3600000;
+      }
+      if (gapH > 0) free += gapH;
+    }
+    if (free > 0) score += o.campus * free;
+    for (let i=0; i<blocks.length; i++){
+      const b = blocks[i];
+      // 9am start penalty (only the starting hour 9:00)
+      if (Math.floor(b.start/3600000) === 9) score += o.nine;
+      // 5pm occupancy penalty (block touches the 17:00 hour)
+      if (b.start < 17*3600000 && b.end > 17*3600000) score += o.five;
+    }
+  }
+  return score;
+}
+
+// Sample many clash-free plans and return the one with the lowest score.
+// Honours the same locked sections as solve(). Falls back to a random
+// clash-free plan if nothing samples well within the time budget.
+function solveBest(plans, iterations, opts){
+  const deadline = Date.now() + 4000;
+  let best = null, bestScore = Infinity;
+  let samples = 0;
+  // Each tick keeps trying (up to a few hundred attempts) until it lands a
+  // genuinely clash-free plan, so we evaluate `iterations` real plans rather
+  // than mostly null attempts. Stops at the deadline either way.
+  while (samples < iterations && Date.now() < deadline){
+    let plan = null;
+    for (let a = 0; a < 500 && !plan; a++) plan = solve(plans, 1);
+    if (!plan) break;            // genuinely unsolvable under locks
+    samples++;
+    const s = scorePlan(plan, opts);
+    if (s < bestScore){ bestScore = s; best = plan; }
+  }
+  return best;
+}
+
+// Shared renderer: builds the time-by-day grid from an already-chosen
+// clash-free plan and writes it into #timetable.
+function renderPlan(plans, plan, msg){
   const status = document.getElementById("status");
   const out = document.getElementById("timetable");
-  if (plans.length === 0){
-    status.textContent = "No courses loaded.";
-    out.innerHTML = "";
-    return;
-  }
-  const plan = solve(plans, 200);
-  if (!plan){
-    out.innerHTML = "";
-    status.textContent = "Could not build a clash-free timetable. Either two sections " +
-      "you must attend overlap, or the remaining slots can't be filled without a clash. " +
-      "Check the sections you locked in.";
-    return;
-  }
   // build a time-by-day grid: rows are 1-hour slots, from the earliest event
   // hour up to the latest event's end (ignoring empty hours at the edges).
   const events = {};
@@ -307,15 +532,17 @@ function generate(){
   let ci = 0;
   for (const p of plan){
     if (!(p.code in colorOf)) colorOf[p.code] = palette[ci++ % palette.length];
-    for (const {sec, ms} of p.pick){
-      for (const m of ms){
+    for (const item of p.pick){
+      const isLec = !!item.lec;
+      item.ms.forEach((m, idx) => {
+        const secName = isLec ? (item.secs ? item.secs[idx] : "LEC*") : item.sec.name;
         const sh = Math.floor(m.start/3600000);
         const eh = Math.floor(m.end/3600000);
         const span = Math.max(1, eh - sh);
         (events[m.day] = events[m.day] || []).push({
-          startHour: sh, spanHours: span, code: p.code, sec: sec.name, color: colorOf[p.code]
+          startHour: sh, spanHours: span, code: p.code, sec: secName, color: colorOf[p.code]
         });
-      }
+      });
     }
   }
   // determine grid bounds from actual events (no empty rows at the edges)
@@ -326,34 +553,87 @@ function generate(){
       END_H = Math.max(END_H, e.startHour + e.spanHours);
     }
   if (START_H > END_H){ START_H = 8; END_H = 8; } // no events at all
-  // render table: first column = time, then Mon..Fri
+  // render table: first column = time, then Mon..Fri. Every hour-row emits one
+  // cell per day (no rowspan), so horizontal alignment is always exact. Days
+  // outside Mon..Fri are ignored so stray data can never add extra columns.
+  const DAYS_SHOWN = [1,2,3,4,5];
   let html = "<table class='grid'><thead><tr><th>Time</th>";
-  for (let d=1; d<=5; d++) html += `<th>${DAYS[d-1]}</th>`;
+  for (const d of DAYS_SHOWN) html += `<th>${DAYS[d-1]}</th>`;
   html += "</tr></thead><tbody>";
   for (let h=START_H; h<END_H; h++){
-    html += `<tr><td class="hour">${String(h).padStart(2,"0")}:00</td>`;
-    for (let d=1; d<=5; d++){
-      const evs = (events[d] || []).filter(e => e.startHour === h);
-      if (evs.length){
-        const e = evs[0];
-        html += `<td class="evt" rowspan="${e.spanHours}" style="background:${e.color}">`+
-                `<code>${e.code}</code><br>${e.sec}</td>`;
-      } else if (!(events[d] || []).some(e => e.startHour < h && e.startHour + e.spanHours > h)){
-        html += `<td></td>`;
+    html += `<tr><td class="hour">${fmt12(h,0)}</td>`;
+    for (const d of DAYS_SHOWN){
+      const dayEvs = events[d] || [];
+      const ev = dayEvs.find(e => e.startHour === h);
+      if (ev){
+        // first hour of a block: show label; mark head if it spans >1 hour.
+        // time is shown at the right-middle of the block.
+        const headCls = ev.spanHours > 1 ? "evt head" : "evt";
+        html += `<td class="${headCls}" style="background:${ev.color}">`+
+                `<div class="evt-top"><code>${ev.code}</code></div>`+
+                `<div class="evt-sec">${ev.sec}</div></td>`;
+      } else if (dayEvs.some(e => e.startHour < h && e.startHour + e.spanHours > h)){
+        // continuing hour of a multi-hour block: same colour, no label, no inner
+        // border. The final hour (last row of the span) keeps its bottom border;
+        // middle hours drop both so the block reads as one seamless unit.
+        const cont = dayEvs.find(e => e.startHour < h && e.startHour + e.spanHours > h);
+        const isLast = h === cont.startHour + cont.spanHours - 1;
+        const cls = isLast ? "evt cont last" : "evt cont";
+        html += `<td class="${cls}" style="background:${cont.color}"></td>`;
+      } else {
+        html += `<td class="empty"></td>`;
       }
-      // if a cell is occupied by a spanning block started earlier, emit nothing
     }
     html += "</tr>";
   }
   html += "</tbody></table>";
   out.innerHTML = html;
   const lockedCount = plans.reduce((n,p)=>n+p.locked.length,0);
-  status.textContent = `Built a timetable from ${lockedCount} locked section(s) across ${plan.length} course(s). Click Reroll for another arrangement.`;
+  status.textContent = `Built a timetable from ${lockedCount} locked section(s) across ${plan.length} course(s). ${msg}`;
 }
 
-document.getElementById("generate").addEventListener("click", generate);
-document.getElementById("reroll").addEventListener("click", generate);
-load();
+// Sample many clash-free plans and keep the one that best satisfies the
+// checked optimizer preferences. Falls back to a random clash-free plan.
+function optimize(){
+  const plans = selectedPlan();
+  const status = document.getElementById("status");
+  const out = document.getElementById("timetable");
+  const info = document.getElementById("optInfo");
+  if (plans.length === 0){
+    status.textContent = "No courses loaded.";
+    out.innerHTML = "";
+    return;
+  }
+  const opts = {
+    campus: document.getElementById("optCampus").checked ? 1 : 0,
+    lunch:  document.getElementById("optLunch").checked ? 1 : 0,
+    nine:   document.getElementById("optNine").checked  ? 1 : 0,
+    five:   document.getElementById("optFive").checked  ? 1 : 0,
+  };
+  const best = solveBest(plans, 400, opts);
+  if (!best){
+    out.innerHTML = "";
+    status.textContent = "Could not build a clash-free timetable. Either two sections " +
+      "you must attend overlap, or the remaining slots can't be filled without a clash. " +
+      "Check the sections you locked in.";
+    return;
+  }
+  const score = scorePlan(best, opts);
+  if (info) info.textContent = "optimized (penalty " + score + ")";
+  renderPlan(plans, best, "Click Optimize for another arrangement.");
+}
+
+document.getElementById("optimize").addEventListener("click", optimize);
+document.getElementById("loadData").addEventListener("click", load);
+// show the "include lunch" sub-option only when "Minimize free time on campus" is checked
+document.getElementById("optCampus").addEventListener("change", (e) => {
+  const wrap = document.getElementById("lunchWrap");
+  if (wrap) wrap.hidden = !e.target.checked;
+});
+// changing any dropdown clears the stale course list; only Load fetches + shows
+for (const id of ["selTrack","selYear","selSession"])
+   document.getElementById(id).addEventListener("change", clearCourses);
+clearCourses();
 </script>
 </body>
 </html>

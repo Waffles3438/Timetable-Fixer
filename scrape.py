@@ -77,6 +77,30 @@ def filter_by_codes(courses, codes):
     return [c for c in courses if c["code"].upper() in wanted]
 
 
+def _mt_key(mt):
+    """Sort key for a meeting-time: by day of week, then start time of day."""
+    start = mt.get("start", {})
+    return (start.get("day", 0), start.get("millisofday", 0))
+
+
+def normalize_courses(courses):
+    """Normalize the scraped data so downstream consumers get a stable shape.
+
+    The ttb API returns a section's meetings in arbitrary order (e.g. a section
+    meeting Fri/Mon/Tue is listed Fri first). We sort each section's
+    meetingTimes chronologically (Mon -> Fri) so that meeting index 0 is the
+    1st lecture of the week, index 1 the 2nd, etc. This keeps timetable logic
+    (which picks one section per lecture position) correct without re-sorting
+    at runtime. Also drops sections with no meeting times.
+    """
+    for course in courses:
+        for sec in course.get("sections", []):
+            mts = sec.get("meetingTimes") or []
+            if mts:
+                sec["meetingTimes"] = sorted(mts, key=_mt_key)
+    return courses
+
+
 # Department code -> course-code prefix. Year is appended (e.g. "ECE" + "2" -> "ECE2").
 DEPARTMENT_PREFIX = {
     "ece": "ECE",
@@ -102,6 +126,42 @@ SESSION_CODES = {
 
 # Year -> course-level code used by the ttb API (year 1 = 100/A, year 2 = 200/B).
 YEAR_LEVEL = {"1": ["100/A"], "2": ["200/B"], "3": ["300/C"], "4": ["400/D"]}
+
+
+def cached_filename(args):
+    """Stable cache filename: <program>-<year>-<semester>.json
+    e.g. electrical-2-fall.json, none-1-winter.json."""
+    year = args.year or "all"
+    session = args.session or "both"
+    track = args.curriculum or "none"
+    return f"{track}-{year}-{session}.json"
+
+
+def save_cached(args, courses):
+    """Write `courses` to web/data/<combo>.json and refresh the manifest
+    listing every cached combination the website can pick from."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(here, "web", "data")
+    os.makedirs(data_dir, exist_ok=True)
+    fname = cached_filename(args)
+    path = os.path.join(data_dir, fname)
+    with open(path, "w") as f:
+        json.dump(courses, f, indent=2)
+    print(f"Cached {len(courses)} entries to {path}")
+
+    # refresh manifest of all cached combos
+    combos = []
+    for fn in sorted(os.listdir(data_dir)):
+        if not fn.endswith(".json") or fn == "manifest.json":
+            continue
+        stem = fn[:-5]
+        try:
+            t, y, s = stem.split("-", 2)
+        except ValueError:
+            continue
+        combos.append({"file": fn, "program": t, "year": y, "session": s})
+    with open(os.path.join(data_dir, "manifest.json"), "w") as f:
+        json.dump({"combos": combos}, f, indent=2)
 
 
 def main():
@@ -159,7 +219,7 @@ def main():
             print("--curriculum requires --year (e.g. --year 2)", file=sys.stderr)
             sys.exit(1)
         track = args.curriculum if args.curriculum in ("computer", "electrical") else None
-        prog = get_program_courses("ece", args.year, track=track)
+        prog = get_program_courses(args.curriculum, args.year, track=track)
         # restrict to the requested session if not "both"
         if args.session != "both":
             curriculum_codes = set(prog.get(args.session, []))
@@ -195,6 +255,8 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
+    courses = normalize_courses(courses)
+
     with open(args.out, "w") as f:
         json.dump(courses, f, indent=2)
     print(f"Saved {len(courses)} entries to {args.out}")
@@ -206,6 +268,10 @@ def main():
         with open(web_path, "w") as f:
             json.dump(courses, f, indent=2)
         print(f"Synced web/courses.json ({len(courses)} entries)")
+
+    # Also cache into web/data/<year>-<session>-<track>.json so the
+    # website can offer a year/semester/track picker without re-scraping.
+    save_cached(args, courses)
 
 
 if __name__ == "__main__":
