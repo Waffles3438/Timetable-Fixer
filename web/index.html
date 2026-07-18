@@ -123,10 +123,10 @@
       <div class="opt-sub" id="lunchWrap" hidden>
         <label><input type="checkbox" id="optLunch"> Provide time for lunch</label>
       </div>
-      <label><input type="checkbox" id="optNine"> Fewer 9:00 AM classes</label>
-      <label><input type="checkbox" id="optFive"> Fewer 5:00 PM classes</label>
+      <label><input type="checkbox" id="optEarly"> End early</label>
+      <label><input type="checkbox" id="optLate"> Start late</label>
       <button id="optimize">Optimize</button>
-      <span id="optInfo" class="legend"></span>
+      <div id="optInfo" class="legend"></div>
     </div>
     <div class="legend" id="hint" hidden>Check the exact lecture / tutorial / practical
       sections you must attend. Locked sections stay fixed; the rest is filled
@@ -199,7 +199,7 @@ function cacheKey(){
 function resetOptimizerState(){
   bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
   _lecOptCache.clear(); _comboCache.clear();
-  for (const id of ["optCampus","optLunch","optNine","optFive"])
+  for (const id of ["optCampus","optLunch","optEarly","optLate"])
     if (document.getElementById(id)) document.getElementById(id).checked = false;
   const lunchWrap = document.getElementById("lunchWrap");
   if (lunchWrap) lunchWrap.hidden = true;
@@ -569,10 +569,13 @@ function solve(plans, maxTries){
 //   lunch  : when set, reward keeping >=1 free hour inside the 11:00-13:00
 //            window; penalize only the portion of that window taken by classes
 //            (a schedule with a full lunch break gets no lunch penalty).
-//   nine   : classes that start at 9:00 (early).
-//   five    : classes that run during the 5pm (17:00) hour.
+//   early  : prefer schedules whose classes end as early as possible. Penalty
+//            = sum of all class end times, so shifting ANY class earlier helps
+//            (not just the single latest one).
+//   late   : prefer schedules whose classes start as late as possible. Penalty
+//            = -sum of all class start times, so shifting ANY class later helps.
 function scorePlan(plan, opts){
-  const o = Object.assign({campus:1, nine:1, five:1, lunch:0}, opts||{});
+  const o = Object.assign({campus:1, early:0, late:0, lunch:0}, opts||{});
   let score = 0;
   // gather per-day blocks: {start, end}
   const byDay = {};
@@ -584,6 +587,11 @@ function scorePlan(plan, opts){
   // day that has any class adds 1 to the score, so the optimizer prefers
   // to compress classes into fewer days (free days cost nothing).
   for (const d of Object.keys(byDay)) score += o.campus * 1;
+  // track sums of start/end times across the whole week, for the
+  // "start as late as possible" / "end as early as possible" preferences.
+  // We sum every block (not just the single extreme) so the optimizer prefers
+  // fewer/more classes at the late/early edge, not just the one latest end.
+  let sumStart = 0, sumEnd = 0;
   for (const d of Object.keys(byDay)){
     const blocks = byDay[d].sort((a,b)=>a.start-b.start);
     // free time on campus = sum of gaps between consecutive classes that day
@@ -611,17 +619,21 @@ function scorePlan(plan, opts){
       }
       const lunchFree = (windowMs - occupied) / 3600000;
       if (lunchFree < 1){
-        score += o.campus * ((1 - lunchFree)); // penalty for the missing lunch time
+        // own weight (not o.campus) so "Provide time for lunch" works
+        // independently of the campus preference.
+        score += 1 * (1 - lunchFree); // penalty for the missing lunch time
       }
     }
-    for (let i=0; i<blocks.length; i++){
-      const b = blocks[i];
-      // 9am start penalty (only the starting hour 9:00)
-      if (Math.floor(b.start/3600000) === 9) score += o.nine;
-      // 5pm occupancy penalty (block touches the 17:00 hour)
-      if (b.start < 17*3600000 && b.end > 17*3600000) score += o.five;
+    for (const b of blocks){
+      sumStart += b.start;
+      sumEnd += b.end;
     }
   }
+  // End as early as possible: penalize the total of all class end times, so
+  // shifting ANY class earlier helps (fewer/more classes ending late all count).
+  if (o.early) score += sumEnd / 3600000;
+  // Start as late as possible: reward later starts (negative penalty on total).
+  if (o.late) score -= sumStart / 3600000;
   return score;
 }
 
@@ -749,8 +761,8 @@ function optimize(){
   const opts = {
     campus: document.getElementById("optCampus").checked ? 1 : 0,
     lunch:  document.getElementById("optLunch").checked ? 1 : 0,
-    nine:   document.getElementById("optNine").checked  ? 1 : 0,
-    five:   document.getElementById("optFive").checked  ? 1 : 0,
+    early:  document.getElementById("optEarly").checked  ? 1 : 0,
+    late:   document.getElementById("optLate").checked   ? 1 : 0,
   };
   const best = solveBest(plans, 900, opts);
   if (!best){
