@@ -337,14 +337,14 @@ function renderCourseList(){
     head.className = "course-head";
     head.innerHTML = `<code>${c.code}</code> <span class="nm">${c.name}</span>`;
     wrap.appendChild(head);
-    // "Lectures not worth attending" radio under the course name. Unchecked by
-    // default (= lectures ARE worth attending). When checked, none of that
-    // course's lectures are placed on the timetable.
+    // "Lectures not worth attending" circular radio under the course name.
+    // Unchecked by default (= lectures ARE worth attending). When checked, none
+    // of that course's lectures are placed on the timetable.
     if (c.sections.some(s => s.teachMethod === "LEC")){
       const lecLbl = document.createElement("label");
       lecLbl.className = "section lec-worth-lbl";
       lecLbl.innerHTML =
-        `<input type="checkbox" class="lecWorth" data-code="${c.code}"`+
+        `<input type="radio" name="${c.code}-LEC" class="lecWorth" data-code="${c.code}"`+
         (uselessLec.has(c.code) ? ` checked` : ``)+
         `> <span>Lectures not worth attending</span>`;
       wrap.appendChild(lecLbl);
@@ -409,7 +409,12 @@ function renderCourseList(){
       hdr.textContent = "Tutorials";
       wrap.appendChild(hdr);
       const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
-      const N = tutOpts.length; // you can attend at most all available sections
+      // dropdown max = the most tutorial MEETINGS per week this course offers,
+      // computed from each section's repetitionTime (ONCE_A_WEEK=1, TWICE=2).
+      // It is the largest total weekly-meeting count achievable by a non-clashing
+      // set of tutorial sections (e.g. twice-weekly sections count as 2, and you
+      // can attend two different once-weekly sections at different times = 2).
+      const N = maxTutWeekly(tutOpts);
       const amount = Math.min(tutAmount.get(c.code) || 0, N);
       const dropLbl = document.createElement("label");
       dropLbl.className = "section tut-drop-lbl";
@@ -450,7 +455,7 @@ function renderCourseList(){
   // clicking an already-selected radio again toggles it off (unselect)
   list.onclick = (e) => {
     const box = e.target;
-    if (box && box.type === "radio" && box._wasChecked && !box.classList.contains("lecWorth")){
+    if (box && box.type === "radio" && box._wasChecked){
       box.checked = false;
     }
     for (const r of list.querySelectorAll('input[type=radio]'))
@@ -485,29 +490,46 @@ function renderCourseList(){
       return;
     }
     if (box.classList.contains("tutAttend")){
-      // dropdown sets the target number of tutorials worth attending (0..N).
+      // dropdown sets the target number of weekly tutorial meetings (0..N).
       const code = box.dataset.code;
       const course = COURSES.find(c => c.code === code);
-      const N = course.sections.filter(s => s.teachMethod === "TUT").length;
+      const N = maxTutWeekly(course.sections.filter(s => s.teachMethod === "TUT"));
       const k = Math.max(0, Math.min(N, parseInt(box.value, 10) || 0));
       tutAmount.set(code, k);
-      // if currently-selected tutorials exceed the new target, drop the extras
-      const sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
+      // if currently-locked tutorials already meet/exceed the new weekly target,
+      // drop the lowest-priority ones until their total weekly meetings fit.
+      let sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
         .sort((a,b)=>a.localeCompare(b));
-      while (sel.length > k) selectedTut.delete(sel.pop());
+      while (sel.length){
+        const total = sel.reduce((sum, key) => {
+          const sec = course.sections.find(s => s.name === key.split("|")[1]);
+          return sum + (sec ? tutWeekly(sec) : 0);
+        }, 0);
+        if (total <= k) break;
+        selectedTut.delete(sel.pop());
+        sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
+          .sort((a,b)=>a.localeCompare(b));
+      }
       renderCourseList();
       bestSoFar = null; // tutorial target changed: restart cumulative search
       return;
     }
     if (box.classList.contains("attendTut")){
-      // a single tutorial checkbox toggled. Never allow more selected than the
-      // target count; reject the check if it would exceed tutAmount.
+      // a single tutorial checkbox toggled. Never let the locked tutorials'
+      // total weekly meetings exceed the target; reject the check if it would.
       const code = box.dataset.code, sec = box.dataset.sec;
       const key = code + "|" + sec;
       const amount = tutAmount.get(code) || 0;
-      const selCount = [...selectedTut].filter(k => k.startsWith(code + "|")).length;
+      const course = COURSES.find(c => c.code === code);
+      const selWeekly = [...selectedTut]
+        .filter(k => k.startsWith(code + "|"))
+        .reduce((sum, k2) => {
+          const s = course.sections.find(s => s.name === k2.split("|")[1]);
+          return sum + (s ? tutWeekly(s) : 0);
+        }, 0);
       if (box.checked){
-        if (selCount >= amount){ box.checked = false; return; }
+        const w = tutWeekly(course.sections.find(s => s.name === sec));
+        if (selWeekly + w > amount){ box.checked = false; return; }
         selectedTut.add(key);
       } else {
         selectedTut.delete(key);
@@ -617,31 +639,65 @@ function selectedPlan(){
   return plans;
 }
 
-// Build every combination of `amount` tutorial sections that INCLUDES all of
-// `selNames` (the user-locked ones). Each combination is one option the solver
-// can pick; the solver always fixes the locked tutorials and lets the optimizer
-// choose the remaining (amount - selNames.length) from the unchecked pool.
-// Combinations whose own meetings clash with each other are discarded.
+// Weekly tutorial-meeting count of a section, derived from repetitionTime
+// (ONCE_A_WEEK = 1, TWICE_A_WEEK = 2; absence defaults to the number of meetings).
+function tutWeekly(sec){
+  const mts = sec.meetingTimes || [];
+  if (!mts.length) return meetings(sec).length;
+  return mts.reduce((sum, mt) =>
+    sum + (mt.repetitionTime === "TWICE_A_WEEK" ? 2
+         : mt.repetitionTime === "ONCE_A_WEEK" ? 1 : 0), 0);
+}
+// Largest total weekly tutorial-meeting count achievable by a non-clashing set
+// of this course's tutorial sections. Used as the max of the "worth attending"
+// dropdown. Enumerates all subsets (cheap for the small section counts here).
+function maxTutWeekly(tutSecs){
+  let best = 0;
+  const n = tutSecs.length;
+  for (let mask=1; mask < (1<<n); mask++){
+    const chosen = [];
+    for (let i=0;i<n;i++) if (mask & (1<<i)) chosen.push(tutSecs[i]);
+    const ms = chosen.flatMap(s => meetings(s));
+    let clash = false;
+    for (let i=0;i<ms.length && !clash;i++)
+      for (let j=i+1;j<ms.length;j++)
+        if (overlaps(ms[i], ms[j])){ clash = true; break; }
+    if (clash) continue;
+    const total = chosen.reduce((sum, s) => sum + tutWeekly(s), 0);
+    if (total > best) best = total;
+  }
+  return best;
+}
+// Build every non-clashing set of tutorial sections whose total weekly meeting
+// count EQUALS `amount` (the "worth attending" target, counted via repetitionTime)
+// and which INCLUDES all of `selNames` (the user-locked tutorials). Each set is
+// one option the solver can pick; the optimizer fills the remaining weekly
+// meetings from the unchecked pool. If the locked tutorials already exceed
+// `amount`, no valid set exists.
 function buildTutOptions(tutSecs, amount, selNames){
   const sel = tutSecs.filter(s => selNames.includes(s.name));
-  if (sel.length > amount) return [];
+  const selWeekly = sel.reduce((sum, s) => sum + tutWeekly(s), 0);
+  if (selWeekly > amount) return [];
+  const need = amount - selWeekly;
   const rest = tutSecs.filter(s => !selNames.includes(s.name));
-  const need = amount - sel.length;
   const result = [];
-  const pick = (start, chosen) => {
-    if (chosen.length === need){
+  const pick = (start, chosen, used) => {
+    if (used === need){
       const secs = sel.concat(chosen);
       const ms = secs.flatMap(s => meetings(s));
-      // internal clash check between the chosen tutorial sections
       for (let i=0;i<ms.length;i++)
         for (let j=i+1;j<ms.length;j++)
           if (overlaps(ms[i], ms[j])) return;
       result.push({sec: {name: "TUT*"}, ms, secs: secs.map(s => s.name)});
       return;
     }
-    for (let i=start; i<rest.length; i++) pick(i+1, chosen.concat(rest[i]));
+    for (let i=start; i<rest.length; i++){
+      const w = tutWeekly(rest[i]);
+      if (used + w > need) continue;
+      pick(i+1, chosen.concat(rest[i]), used + w);
+    }
   };
-  pick(0, []);
+  pick(0, [], 0);
   return result;
 }
 
