@@ -357,23 +357,28 @@ function renderCourseList(){
     const tms = Object.keys(groups).sort((a,b)=>(tmOrder[a]-tmOrder[b]));
     for (const tm of tms){
       if (tm === "PRA"){
-        // practicals: pick at most one to lock (radio). A single "worth
+        // practicals: pick at most one to lock (radio). A single "not worth
         // attending" checkbox per course decides whether the practicals are
-        // attended at all; if not, the whole PRA component is dropped.
+        // attended at all; if checked, the whole PRA component is dropped and
+        // the section radios are hidden.
         const hdr = document.createElement("div");
         hdr.className = "tm-head";
         hdr.textContent = "PRA (pick one to lock)";
         wrap.appendChild(hdr);
+        const praSections = groups.PRA;
+        const praUseless = praSections.every(s => uselessPra.has(c.code + "|" + s.name));
         const praWorth = document.createElement("label");
         praWorth.className = "section pra-worth-lbl";
-        const praSections = groups.PRA;
-        const anyPraUseless = uselessPra.has(c.code);
         praWorth.innerHTML =
           `<input type="checkbox" class="praWorth" data-code="${c.code}"`+
-          (anyPraUseless ? `` : ` checked`)+
-          `> <span>Worth attending</span>`;
+          (praUseless ? ` checked` : ``)+
+          `> <span>Not worth attending</span>`;
         wrap.appendChild(praWorth);
-        const opts = groups.PRA.slice().sort((a,b)=>a.name.localeCompare(b.name));
+        // container for the PRA section radios; hidden when "not worth attending"
+        const praSecs = document.createElement("div");
+        praSecs.className = "pra-sections";
+        if (praUseless) praSecs.hidden = true;
+        const opts = praSections.slice().sort((a,b)=>a.name.localeCompare(b.name));
         const kept = lockedByCode[c.code] && lockedByCode[c.code].PRA;
         for (const sec of opts){
           const lbl = document.createElement("label");
@@ -383,8 +388,9 @@ function renderCourseList(){
             `<input type="radio" name="${c.code}-PRA" data-code="${c.code}" data-sec="${sec.name}" data-tm="PRA"`+
             (isLocked ? " checked" : "")+
             `> <span class="tm">PRA</span> ${sec.name}`;
-          wrap.appendChild(lbl);
+          praSecs.appendChild(lbl);
         }
+        wrap.appendChild(praSecs);
         continue;
       }
       // TUT: a dropdown picks how many tutorials are ATTENDING (0..N). The rest
@@ -396,21 +402,19 @@ function renderCourseList(){
       hdr.textContent = "TUT";
       wrap.appendChild(hdr);
       const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
-      const N = tutOpts.length;
-      // A course only ever requires a small number of tutorials (1 or 2); the
-      // data lists many sections to choose from, so cap the "attending" count
-      // at MAX_TUTS rather than at the (large) number of sections.
-      const MAX_TUTS = 2;
-      const maxAttend = Math.min(N, MAX_TUTS);
+      // how many tutorials you must attend = the most meetings any single TUT
+      // section has (e.g. MAT290 sections meet twice -> 2; ECE231 once -> 1).
+      // This caps the "TUTs attending" dropdown at the real requirement, not
+      // at the number of available sections.
+      const N = tutOpts.reduce((m, s) => Math.max(m, (s.meetingTimes || []).length), 0);
       const dropped = tutOpts.filter(s => uselessTut.has(c.code + "|" + s.name));
-      let attending = N - dropped.length;
-      if (attending > maxAttend) attending = maxAttend; // clamp stale state
+      const attending = N - dropped.length;
       const dropLbl = document.createElement("label");
       dropLbl.className = "section tut-drop-lbl";
       const dropSel = document.createElement("select");
       dropSel.className = "tutAttend";
       dropSel.dataset.code = c.code;
-      for (let i=0; i<=maxAttend; i++){
+      for (let i=0; i<=N; i++){
         const o = document.createElement("option");
         o.value = String(i);
         o.textContent = String(i);
@@ -420,19 +424,23 @@ function renderCourseList(){
       dropLbl.appendChild(document.createTextNode("TUTs attending: "));
       dropLbl.appendChild(dropSel);
       wrap.appendChild(dropLbl);
-      // pickers to choose WHICH tutorials to drop (one per dropped tutorial)
-      for (let i=0; i<dropped.length; i++){
-        const pick = document.createElement("select");
-        pick.className = "tutDropPick";
-        pick.dataset.code = c.code;
-        pick.dataset.idx = String(i);
-        for (const s of tutOpts){
-          const o = document.createElement("option");
-          o.value = s.name; o.textContent = s.name;
-          pick.appendChild(o);
+      // pickers to choose WHICH tutorials to drop (one per dropped tutorial).
+      // When none are worth attending (attending === 0) there is nothing to
+      // choose, so skip the pickers.
+      if (attending > 0){
+        for (let i=0; i<dropped.length; i++){
+          const pick = document.createElement("select");
+          pick.className = "tutDropPick";
+          pick.dataset.code = c.code;
+          pick.dataset.idx = String(i);
+          for (const s of tutOpts){
+            const o = document.createElement("option");
+            o.value = s.name; o.textContent = s.name;
+            pick.appendChild(o);
+          }
+          pick.value = dropped[i].name;
+          wrap.appendChild(pick);
         }
-        pick.value = dropped[i].name;
-        wrap.appendChild(pick);
       }
       // attending tutorials: shown and attended (checked by default)
       for (const sec of tutOpts){
@@ -483,8 +491,8 @@ function renderCourseList(){
         .filter(s => s.teachMethod === "PRA")
         .map(s => s.name);
       for (const n of praNames){
-        if (box.checked) uselessPra.delete(code + "|" + n);
-        else uselessPra.add(code + "|" + n);
+        if (box.checked) uselessPra.add(code + "|" + n);
+        else uselessPra.delete(code + "|" + n);
       }
       renderCourseList();
       bestSoFar = null; // practical attendance changed: restart cumulative search
@@ -497,7 +505,10 @@ function renderCourseList(){
         .filter(s => s.teachMethod === "TUT")
         .map(s => s.name)
         .sort((a,b)=>a.localeCompare(b));
-      const N = tutNames.length;
+      const N = tutNames.reduce((m, n) => {
+        const sec = course.sections.find(s => s.name === n);
+        return Math.max(m, (sec && sec.meetingTimes || []).length);
+      }, 0);
       // clear this course's dropped tutorials, then re-derive from the controls
       for (const n of tutNames) uselessTut.delete(code + "|" + n);
       const wrap = box.closest(".course");
