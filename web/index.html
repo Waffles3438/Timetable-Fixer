@@ -27,6 +27,10 @@
    .section .tm { display:inline-block; min-width:34px; color:#0d6efd;
                   font-size:.72rem; font-weight:600; }
    .lec-worth-lbl { padding-left:14px; font-size:.82rem; color:#444; }
+   .tut-classes { padding:2px 0 4px 34px; display:flex; flex-direction:column; gap:2px; }
+   .tut-class { font-size:.8rem; color:#555; padding:1px 0; display:flex; align-items:center; gap:6px; }
+   .tut-class .tc-day { min-width:30px; font-weight:400; }
+   .tut-class .tc-time { font-variant-numeric:tabular-nums; }
   button { background:var(--accent); color:#fff; border:none; border-radius:8px;
            padding:10px 14px; font-size:.95rem; cursor:pointer; }
   button:hover { filter:brightness(1.05); }
@@ -173,21 +177,24 @@ function clashFree(blocks, chosen){
 function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
-// tutorial sections the user manually selected ("worth attending"), keyed by
-// "courseCode|sectionName". These are LOCKED into the timetable. Sections left
-// unselected are still candidates the optimizer may choose to reach the target
-// "Tutorials worth attending" count (tutAmount). There is no separate "drop"
-// concept for tutorials: whatever is not selected is simply left to the optimizer.
-const selectedTut = new Set();
-// per-course target number of tutorial sections that are worth attending
-// (including the manually selected ones). 0 = no tutorials attended.
-const tutAmount = new Map();
+// tutorial sections the user manually selected are no longer tracked: tutorials
+// are attended by default and the whole TUT component is dropped per-course via
+// the "Not worth attending" checkbox (see uselessTut below).
+// courses whose tutorials (TUT) are marked "not worth attending", keyed by
+// course code. When set, the whole TUT component is left off the timetable.
+const uselessTut = new Set();
 // courses whose practicals (PRA) are marked "not worth attending", keyed by
 // course code. When set, the whole PRA component is left off the timetable.
 const uselessPra = new Set();
 // courses whose lectures are marked "not worth attending", keyed by course
 // code. When set, none of that course's lectures are placed on the timetable.
 const uselessLec = new Set();
+// per-TUT-section attendance for SELECTED multi-meeting tutorial sections,
+// keyed by "courseCode|secName". Value (when present) is a Set of meeting
+// indices the user will attend; absent means "attend all meetings of the
+// selected section". The section is selected via its TUT radio; per-class
+// checkboxes then toggle individual meetings off.
+const tutAttend = new Map();
 // Best plan found across Optimize presses (cumulative): only re-render when a
 // new search beats it. Reset whenever the inputs (locks / options) change.
 let bestSoFar = null;
@@ -211,7 +218,7 @@ function cacheKey(){
 function resetOptimizerState(){
   bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
   _lecOptCache.clear(); _comboCache.clear();
-  selectedTut.clear(); tutAmount.clear(); uselessPra.clear(); uselessLec.clear();
+  uselessTut.clear(); uselessPra.clear(); uselessLec.clear();
   for (const id of ["optCampus","optLunch","optEarly","optLate"])
     if (document.getElementById(id)) document.getElementById(id).checked = false;
   const lunchWrap = document.getElementById("lunchWrap");
@@ -302,10 +309,9 @@ async function load(){
     return {code, name, sections, combos};
   });
 
-  // tutorials default to UNSELECTED (not locked) and the "worth attending" count
-  // defaults to 0, so no tutorials are placed until the user picks some or sets
-  // a target count for the optimizer to fill. selectedTut/tutAmount already start
-  // empty from resetOptimizerState(), so nothing to seed here.
+  // tutorials are attended by default (just like lectures); the user can mark a
+  // course's tutorials "not worth attending" to drop them from the timetable.
+  // No per-section selection is needed, so nothing is seeded here.
 
   renderCourseList();
   const panel = document.getElementById("optPanel");
@@ -318,8 +324,8 @@ async function load(){
     "Load courses, then press Optimize to build a timetable.";
 }
 
-// Builds (or rebuilds) the left-side course list. Reads selectedTut/tutAmount so
-// the tutorial checkboxes + "worth attending" dropdown reflect the current state.
+// Builds (or rebuilds) the left-side course list. Reads uselessTut/uselessPra/
+// uselessLec so the "Not worth attending" checkboxes reflect the current state.
 function renderCourseList(){
   const list = document.getElementById("courseList");
   // capture currently-locked sections (so a rebuild from marking one tutorial
@@ -385,6 +391,11 @@ function renderCourseList(){
         if (praUseless) praSecs.hidden = true;
         const opts = praSections.slice().sort((a,b)=>a.name.localeCompare(b.name));
         const kept = lockedByCode[c.code] && lockedByCode[c.code].PRA;
+        const praFreq = (sec) => {
+          const reps = new Set((sec.meetingTimes || []).map(m => m.repetitionTime));
+          if (reps.has("TWICE_A_WEEK")) return " (twice a week)";
+          return "";
+        };
         for (const sec of opts){
           const lbl = document.createElement("label");
           lbl.className = "section";
@@ -392,58 +403,98 @@ function renderCourseList(){
           lbl.innerHTML =
             `<input type="radio" name="${c.code}-PRA" data-code="${c.code}" data-sec="${sec.name}" data-tm="PRA"`+
             (isLocked ? " checked" : "")+
-            `> <span class="tm">PRA</span> ${sec.name}`;
+            `> <span class="tm">PRA</span> ${sec.name}${praFreq(sec)}`;
           praSecs.appendChild(lbl);
         }
         wrap.appendChild(praSecs);
         continue;
       }
-      // TUT: a dropdown chooses how many tutorial SECTIONS are worth attending
-      // (0..number of sections). Each section has its own checkbox; checking it
-      // LOCKS that tutorial into the timetable. You can never check more than the
-      // dropdown amount. Sections left unchecked are still candidates the
-      // optimizer may pick to reach the target count. By default nothing is
-      // checked and the count is 0, so no tutorials are placed until you choose.
-      const hdr = document.createElement("div");
-      hdr.className = "tm-head";
-      hdr.textContent = "Tutorials";
-      wrap.appendChild(hdr);
-      const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
-      // dropdown max = the most tutorial MEETINGS per week this course offers,
-      // computed from each section's repetitionTime (ONCE_A_WEEK=1, TWICE=2).
-      // It is the largest total weekly-meeting count achievable by a non-clashing
-      // set of tutorial sections (e.g. twice-weekly sections count as 2, and you
-      // can attend two different once-weekly sections at different times = 2).
-      const N = maxTutWeekly(tutOpts);
-      const amount = Math.min(tutAmount.get(c.code) || 0, N);
-      const dropLbl = document.createElement("label");
-      dropLbl.className = "section tut-drop-lbl";
-      const dropSel = document.createElement("select");
-      dropSel.className = "tutAttend";
-      dropSel.dataset.code = c.code;
-      for (let i=0; i<=N; i++){
-        const o = document.createElement("option");
-        o.value = String(i);
-        o.textContent = String(i);
-        dropSel.appendChild(o);
-      }
-      dropSel.value = String(amount);
-      dropLbl.appendChild(document.createTextNode("Tutorials worth attending: "));
-      dropLbl.appendChild(dropSel);
-      wrap.appendChild(dropLbl);
-      // tutorial section checkboxes (default UNCHECKED = not locked). The
-      // optimizer fills the rest up to the target count from the unchecked ones.
+      // TUT: a single "Not worth attending" checkbox per course. When checked,
+      // the whole TUT component is dropped from the timetable (like practicals).
+      // By default tutorials ARE attended, so the checkbox starts unchecked.
+      const tutHdr = document.createElement("div");
+      tutHdr.className = "tm-head";
+      tutHdr.textContent = "Tutorials";
+      wrap.appendChild(tutHdr);
+      const tutWorth = document.createElement("label");
+      tutWorth.className = "section tut-worth-lbl";
+      tutWorth.innerHTML =
+        `<input type="checkbox" class="tutWorth" data-code="${c.code}"`+
+        (uselessTut.has(c.code) ? ` checked` : ``)+
+        `> <span>Not worth attending</span>`;
+      wrap.appendChild(tutWorth);
+      // container for the TUT section radios; hidden when "not worth attending".
+      // These are display-only: tutorials are not user-locked (the optimizer
+      // picks one), but the sections are listed so the user can see them.
       const tutSecs = document.createElement("div");
       tutSecs.className = "tut-sections";
+      if (uselessTut.has(c.code)) tutSecs.hidden = true;
+      const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
+      const tutFreq = (sec) => {
+        const reps = new Set((sec.meetingTimes || []).map(m => m.repetitionTime));
+        if (reps.has("TWICE_A_WEEK")) return " (twice a week)";
+        return "";
+      };
+      const keptTut = lockedByCode[c.code] && lockedByCode[c.code].TUT;
       for (const sec of tutOpts){
-        const isSel = selectedTut.has(c.code + "|" + sec.name);
+        const secMts = sec.meetingTimes || [];
+        const isLocked = sec.name === keptTut;
         const lbl = document.createElement("label");
         lbl.className = "section";
         lbl.innerHTML =
-          `<input type="checkbox" class="attendTut" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT"`+
-          (isSel ? ` checked` : ``)+
-          `> <span class="tm">TUT</span> ${sec.name}`;
+          `<input type="radio" name="${c.code}-TUT" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT"`+
+          (isLocked ? " checked" : "")+
+          `> <span class="tm">TUT</span> ${sec.name}${tutFreq(sec)}`;
         tutSecs.appendChild(lbl);
+        // when a TUT section is selected, show one toggle per class so the user
+        // can pick which meetings to attend (uncheck = skip that class).
+        if (isLocked){
+          const wrap2 = document.createElement("div");
+          wrap2.className = "tut-classes";
+          const chosenKey = c.code + "|" + sec.name;
+          const chosen = tutAttend.get(chosenKey);
+          const selSet = chosen instanceof Set ? chosen
+                         : new Set(secMts.map((_,i)=>i));
+          secMts.forEach((mt, i) => {
+            const cb = document.createElement("label");
+            cb.className = "tut-class";
+            const d = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][mt.start.day - 1] || ("D"+mt.start.day);
+            const fmt = (ms) => {
+              let h = Math.floor(+ms/3600000), m = Math.floor((+ms%3600000)/60000);
+              const ap = h >= 12 ? "pm" : "am";
+              let h12 = h % 12; if (h12 === 0) h12 = 12;
+              return h12 + ":" + String(m).padStart(2,"0") + ap;
+            };
+            const on = selSet.has(i);
+            cb.innerHTML =
+              `<input type="checkbox" class="tutClass" data-code="${c.code}" data-sec="${sec.name}" data-idx="${i}"`+
+              (on ? " checked" : "")+
+              `> <span class="tc-day">${d}</span> <span class="tc-time">${fmt(mt.start.millisofday)}–${fmt(mt.end.millisofday)}</span>`;
+            // attach a direct change listener so toggling a class is handled
+            // reliably regardless of whether the user clicks the box or its label
+            // text (avoids any event-retargeting ambiguity in delegation).
+            const input = cb.querySelector("input.tutClass");
+            input.addEventListener("change", () => {
+              const key = c.code + "|" + sec.name;
+              let set = tutAttend.get(key);
+              if (!(set instanceof Set)){
+                set = new Set(secMts.map((_,j)=>j));
+                tutAttend.set(key, set);
+              }
+              if (input.checked) set.add(i); else set.delete(i);
+              // require at least one class selected: if the user just unchecked
+              // the last remaining one, revert it and keep the full section.
+              if (set.size === 0){
+                set.add(i);
+                input.checked = true;
+              }
+              if (set.size === secMts.length) tutAttend.delete(key);
+              bestSoFar = null; // tutorial attendance changed: restart cumulative search
+            });
+            wrap2.appendChild(cb);
+          });
+          tutSecs.appendChild(wrap2);
+        }
       }
       wrap.appendChild(tutSecs);
     }
@@ -452,19 +503,29 @@ function renderCourseList(){
   // keep the unselect-toggle state in sync for freshly-built radios
   for (const r of list.querySelectorAll('input[type=radio]'))
     r._wasChecked = r.checked;
-  // clicking an already-selected radio again toggles it off (unselect)
+  // clicking an already-selected radio again toggles it off (unselect). For the
+  // LEC "not worth attending" radio this also clears uselessLec so the unselect
+  // survives the next re-render (otherwise the stale state would reappear).
   list.onclick = (e) => {
     const box = e.target;
     if (box && box.type === "radio" && box._wasChecked){
       box.checked = false;
+      if (box.classList.contains("lecWorth") && box.dataset.code){
+        uselessLec.delete(box.dataset.code);
+      }
+      // a previously-selected TUT/PRA/LEC radio is now deselected: re-render so
+      // the selection (and any per-class toggles) reflect the unlocked state.
+      renderCourseList();
+      bestSoFar = null; // lecture attendance changed: restart cumulative search
+      return;
     }
     for (const r of list.querySelectorAll('input[type=radio]'))
       r._wasChecked = r.checked;
     bestSoFar = null; // locks changed: restart cumulative search
   };
-  // per-section "not worth attending": keyed by course|section so a course
-  // with multiple practicals can drop only the chosen component. Lectures use a
-  // single per-course checkbox; tutorials use the selectedTut/tutAmount model.
+  // per-course "not worth attending" toggles: PRA and TUT each use a single
+  // per-course checkbox; LEC uses a single per-course radio. The handlers below
+  // update the corresponding useless* set and re-render.
   list.onchange = (e) => {
     const box = e.target;
     if (box && box.classList && box.classList.contains("lecWorth")){
@@ -489,51 +550,17 @@ function renderCourseList(){
       bestSoFar = null; // practical attendance changed: restart cumulative search
       return;
     }
-    if (box.classList.contains("tutAttend")){
-      // dropdown sets the target number of weekly tutorial meetings (0..N).
+    if (box.classList.contains("tutWorth")){
       const code = box.dataset.code;
-      const course = COURSES.find(c => c.code === code);
-      const N = maxTutWeekly(course.sections.filter(s => s.teachMethod === "TUT"));
-      const k = Math.max(0, Math.min(N, parseInt(box.value, 10) || 0));
-      tutAmount.set(code, k);
-      // if currently-locked tutorials already meet/exceed the new weekly target,
-      // drop the lowest-priority ones until their total weekly meetings fit.
-      let sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
-        .sort((a,b)=>a.localeCompare(b));
-      while (sel.length){
-        const total = sel.reduce((sum, key) => {
-          const sec = course.sections.find(s => s.name === key.split("|")[1]);
-          return sum + (sec ? tutWeekly(sec) : 0);
-        }, 0);
-        if (total <= k) break;
-        selectedTut.delete(sel.pop());
-        sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
-          .sort((a,b)=>a.localeCompare(b));
-      }
+      if (box.checked) uselessTut.add(code);
+      else uselessTut.delete(code);
       renderCourseList();
-      bestSoFar = null; // tutorial target changed: restart cumulative search
+      bestSoFar = null; // tutorial attendance changed: restart cumulative search
       return;
     }
-    if (box.classList.contains("attendTut")){
-      // a single tutorial checkbox toggled. Never let the locked tutorials'
-      // total weekly meetings exceed the target; reject the check if it would.
-      const code = box.dataset.code, sec = box.dataset.sec;
-      const key = code + "|" + sec;
-      const amount = tutAmount.get(code) || 0;
-      const course = COURSES.find(c => c.code === code);
-      const selWeekly = [...selectedTut]
-        .filter(k => k.startsWith(code + "|"))
-        .reduce((sum, k2) => {
-          const s = course.sections.find(s => s.name === k2.split("|")[1]);
-          return sum + (s ? tutWeekly(s) : 0);
-        }, 0);
-      if (box.checked){
-        const w = tutWeekly(course.sections.find(s => s.name === sec));
-        if (selWeekly + w > amount){ box.checked = false; return; }
-        selectedTut.add(key);
-      } else {
-        selectedTut.delete(key);
-      }
+    // selecting a TUT section radio: re-render so its per-class toggle buttons
+    // (for multi-meeting sections) appear underneath it.
+    if (box.dataset && box.dataset.tm === "TUT"){
       renderCourseList();
       bestSoFar = null; // tutorial selection changed: restart cumulative search
       return;
@@ -541,36 +568,48 @@ function renderCourseList(){
   };
 }
 
-// Returns plan objects. `locked` = the at-most-one PRA the user picked (and any
-// LEC is never user-locked). Tutorials are NOT plain locks: the user selects a
-// subset (selectedTut) and a target count (tutAmount); the solver must place
-// exactly `tutAmount` non-clashing tutorial sections that include all the
-// selected ones, filling the rest from the optimizer. PRA/Lecture components
-// not locked are randomized from their remaining sections.
+// Returns plan objects. `locked` = the at-most-one PRA and (optionally) the
+// TUT the user picked via radio. A selected multi-meeting TUT is locked with
+// only its chosen meetings (tutAttend). If no TUT is selected, every TUT
+// section is pooled and the optimizer picks one. LEC is never user-locked;
+// PRA/Lecture components not locked are randomized from their remaining sections.
 function selectedPlan(){
   const checked = document.querySelectorAll('#courseList input:checked');
   const byCode = {};
   for (const box of checked){
-    const code = box.dataset.code, secName = box.dataset.sec, tm = box.dataset.tm;
-    // tutorials are handled via the selectedTut/tutAmount model, NOT as plain
-    // locks; skip them here so they don't end up as a single locked section.
-    if (tm === "TUT") continue;
+    // only the per-section PRA/TUT/LEC radios carry data-tm; skip the
+    // per-class TUT checkboxes (which share data-code/data-sec but have no
+    // data-tm) so they aren't mistaken for locked sections.
+    const tm = box.dataset.tm;
+    if (!tm) continue;
+    const code = box.dataset.code, secName = box.dataset.sec;
     const course = COURSES.find(c => c.code === code);
     if (!course) continue;
     const sec = course.sections.find(s => s.name === secName);
     if (!sec) continue;
+    let ms = meetings(sec);
+    // for a multi-meeting TUT section the user may have unchecked some classes;
+    // keep only the selected meetings (default: all of them).
+    if (tm === "TUT"){
+      const set = tutAttend.get(code + "|" + secName);
+      if (set instanceof Set) ms = ms.filter((_, i) => set.has(i));
+    }
+    // if every class of a selected TUT was unchecked, ignore the selection
+    // entirely (don't lock an empty section); the optimizer then picks a TUT.
+    if (ms.length === 0) continue;
     byCode[code] = byCode[code] || {code, locked: []};
-    byCode[code].locked.push({sec, ms: meetings(sec), tm});
+    byCode[code].locked.push({sec, ms, tm});
   }
   // build per-course plan objects for every course on the page
   const isUseless = (tm, code, secName) =>
-    tm === "PRA" && uselessPra.has(code + "|" + secName);
+    tm === "PRA" && uselessPra.has(code + "|" + secName) ||
+    tm === "TUT" && uselessTut.has(code);
   const plans = [];
   for (const course of COURSES){
     const locked = byCode[course.code] ? byCode[course.code].locked : [];
     const lockedFiltered = locked.filter(l => !isUseless(l.tm, course.code, l.sec.name));
     // which component types are already satisfied by a locked section? (TUT is
-    // never locked as a type; it is filled from the selectedTut + optimizer.)
+    // never locked as a type; it is filled by the optimizer unless uselessTut.)
     const lockedTypes = new Set(lockedFiltered.map(l => l.tm));
     // pool grouped by component type. PRA = one option per section (locked one
     // excluded). LEC = options are triples of individual lecture meetings (one
@@ -592,29 +631,41 @@ function selectedPlan(){
         (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
       }
     }
-    // tutorials: build the set of combinations of `amount` sections that include
-    // all the user-locked (selected) tutorials. amount = tutAmount[code] (0 => none).
-    const tutSecs = course.sections.filter(s => s.teachMethod === "TUT");
-    const amount = tutAmount.get(course.code) || 0;
-    const selNames = tutSecs
-      .map(s => s.name)
-      .filter(n => selectedTut.has(course.code + "|" + n))
-      .sort((a,b)=>a.localeCompare(b));
-    if (tutSecs.length && amount > 0){
-      pool.TUT = buildTutOptions(tutSecs, amount, selNames);
+    // tutorials: if the user selected a TUT section it is already locked (with
+    // only its chosen meetings). Otherwise, when not marked "not worth attending",
+    // pool every TUT section as an option for the optimizer to pick one (attending
+    // all of its meetings). Per-class toggling only applies to a selected section.
+    if (!uselessTut.has(course.code) && !lockedTypes.has("TUT")){
+      for (const sec of course.sections){
+        if (sec.teachMethod === "TUT")
+          (pool.TUT = pool.TUT || []).push({sec, ms: meetings(sec)});
+      }
     }
     // precompute clash-free combos over the pool (one option per type/component).
     // Result depends only on the pool contents + which types are locked + which
-    // practicals/tutorials are selected, all captured in a signature key.
+    // practicals/tutorials are marked useless, all captured in a signature key.
     const uselessSig = course.sections
       .filter(s => s.teachMethod === "PRA")
       .map(s => s.name + (isUseless(s.teachMethod, course.code, s.name) ? "!" : ""))
       .join(",");
-    const typeKeys = Object.keys(pool);
-    const tutSelSig = (pool.TUT ? pool.TUT.length + ":" + selNames.join("+") : "0");
+    // Drop any component type whose pool is empty (e.g. a course whose lectures
+    // cannot be arranged into distinct-day, non-clashing slots, or a lecture
+    // section with no meeting times). Multiplying the combo list by an empty
+    // pool would zero out the whole course and make the timetable unsolvable;
+    // instead we simply omit that component (it behaves like "not placed").
+    const typeKeys = Object.keys(pool).filter(tm => pool[tm].length > 0);
+    const tutSig = uselessTut.has(course.code) ? "X" :
+      (lockedTypes.has("TUT") ? "L" : "") +
+      course.sections.filter(s => s.teachMethod === "TUT")
+        .map(s => {
+          const set = tutAttend.get(course.code + "|" + s.name);
+          const tag = set instanceof Set ? [...set].sort().join("") : "all";
+          return s.name + ":" + tag;
+        })
+        .join(",");
     const comboSig = course.code + "|" + uselessSig + "|" +
       [...lockedTypes].sort().join(",") + "|" +
-      typeKeys.map(tm => tm + ":" + pool[tm].length).join(",") + "|TUT:" + tutSelSig;
+      typeKeys.map(tm => tm + ":" + pool[tm].length).join(",") + "|TUT:" + tutSig;
     let combos = _comboCache.get(comboSig);
     if (!combos){
       combos = [[]];
@@ -637,68 +688,6 @@ function selectedPlan(){
     plans.push({code: course.code, name: course.name, locked: lockedFiltered, poolTypes: typeKeys, combos});
   }
   return plans;
-}
-
-// Weekly tutorial-meeting count of a section, derived from repetitionTime
-// (ONCE_A_WEEK = 1, TWICE_A_WEEK = 2; absence defaults to the number of meetings).
-function tutWeekly(sec){
-  const mts = sec.meetingTimes || [];
-  if (!mts.length) return meetings(sec).length;
-  return mts.reduce((sum, mt) =>
-    sum + (mt.repetitionTime === "TWICE_A_WEEK" ? 2
-         : mt.repetitionTime === "ONCE_A_WEEK" ? 1 : 0), 0);
-}
-// Largest total weekly tutorial-meeting count achievable by a non-clashing set
-// of this course's tutorial sections. Used as the max of the "worth attending"
-// dropdown. Enumerates all subsets (cheap for the small section counts here).
-function maxTutWeekly(tutSecs){
-  let best = 0;
-  const n = tutSecs.length;
-  for (let mask=1; mask < (1<<n); mask++){
-    const chosen = [];
-    for (let i=0;i<n;i++) if (mask & (1<<i)) chosen.push(tutSecs[i]);
-    const ms = chosen.flatMap(s => meetings(s));
-    let clash = false;
-    for (let i=0;i<ms.length && !clash;i++)
-      for (let j=i+1;j<ms.length;j++)
-        if (overlaps(ms[i], ms[j])){ clash = true; break; }
-    if (clash) continue;
-    const total = chosen.reduce((sum, s) => sum + tutWeekly(s), 0);
-    if (total > best) best = total;
-  }
-  return best;
-}
-// Build every non-clashing set of tutorial sections whose total weekly meeting
-// count EQUALS `amount` (the "worth attending" target, counted via repetitionTime)
-// and which INCLUDES all of `selNames` (the user-locked tutorials). Each set is
-// one option the solver can pick; the optimizer fills the remaining weekly
-// meetings from the unchecked pool. If the locked tutorials already exceed
-// `amount`, no valid set exists.
-function buildTutOptions(tutSecs, amount, selNames){
-  const sel = tutSecs.filter(s => selNames.includes(s.name));
-  const selWeekly = sel.reduce((sum, s) => sum + tutWeekly(s), 0);
-  if (selWeekly > amount) return [];
-  const need = amount - selWeekly;
-  const rest = tutSecs.filter(s => !selNames.includes(s.name));
-  const result = [];
-  const pick = (start, chosen, used) => {
-    if (used === need){
-      const secs = sel.concat(chosen);
-      const ms = secs.flatMap(s => meetings(s));
-      for (let i=0;i<ms.length;i++)
-        for (let j=i+1;j<ms.length;j++)
-          if (overlaps(ms[i], ms[j])) return;
-      result.push({sec: {name: "TUT*"}, ms, secs: secs.map(s => s.name)});
-      return;
-    }
-    for (let i=start; i<rest.length; i++){
-      const w = tutWeekly(rest[i]);
-      if (used + w > need) continue;
-      pick(i+1, chosen.concat(rest[i]), used + w);
-    }
-  };
-  pick(0, [], 0);
-  return result;
 }
 
 // Build lecture options. "1st / 2nd / 3rd lecture of the week" means a
@@ -1011,7 +1000,7 @@ function optimize(){
   // If the inputs (locks or options) changed since the remembered best, start
   // the cumulative search fresh; otherwise only adopt a strictly better plan.
   const optsKey = JSON.stringify(opts);
-  const plansKey = JSON.stringify(plans.map(p => p.locked.map(l => l.tm + l.sec.name)));
+  const plansKey = JSON.stringify(plans.map(p => p.locked.map(l => l.tm + l.sec.name + ":" + l.ms.map(m=>m.day+""+m.start).join(","))));
   if (!bestSoFar || optsKey !== bestSoFarOpts || plansKey !== bestSoFarPlans){
     bestSoFar = best; bestSoFarOpts = optsKey; bestSoFarPlans = plansKey;
   } else {
