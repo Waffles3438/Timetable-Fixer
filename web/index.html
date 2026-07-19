@@ -173,10 +173,15 @@ function clashFree(blocks, chosen){
 function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
-// course sections (tutorials) the user marked "not worth attending", keyed by
-// "courseCode|sectionName". Those sections are left off the timetable
-// (free/break time that may be filled by another class or left empty).
-const uselessTut = new Set();
+// tutorial sections the user manually selected ("worth attending"), keyed by
+// "courseCode|sectionName". These are LOCKED into the timetable. Sections left
+// unselected are still candidates the optimizer may choose to reach the target
+// "Tutorials worth attending" count (tutAmount). There is no separate "drop"
+// concept for tutorials: whatever is not selected is simply left to the optimizer.
+const selectedTut = new Set();
+// per-course target number of tutorial sections that are worth attending
+// (including the manually selected ones). 0 = no tutorials attended.
+const tutAmount = new Map();
 // courses whose practicals (PRA) are marked "not worth attending", keyed by
 // course code. When set, the whole PRA component is left off the timetable.
 const uselessPra = new Set();
@@ -206,7 +211,7 @@ function cacheKey(){
 function resetOptimizerState(){
   bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
   _lecOptCache.clear(); _comboCache.clear();
-  uselessTut.clear(); uselessPra.clear(); uselessLec.clear();
+  selectedTut.clear(); tutAmount.clear(); uselessPra.clear(); uselessLec.clear();
   for (const id of ["optCampus","optLunch","optEarly","optLate"])
     if (document.getElementById(id)) document.getElementById(id).checked = false;
   const lunchWrap = document.getElementById("lunchWrap");
@@ -297,11 +302,10 @@ async function load(){
     return {code, name, sections, combos};
   });
 
-  // tutorials default to NOT worth attending (unchecked); only the exact number
-  // the user selects via the "Tutorials worth attending" dropdown are kept.
-  for (const course of COURSES)
-    for (const s of course.sections)
-      if (s.teachMethod === "TUT") uselessTut.add(course.code + "|" + s.name);
+  // tutorials default to UNSELECTED (not locked) and the "worth attending" count
+  // defaults to 0, so no tutorials are placed until the user picks some or sets
+  // a target count for the optimizer to fill. selectedTut/tutAmount already start
+  // empty from resetOptimizerState(), so nothing to seed here.
 
   renderCourseList();
   const panel = document.getElementById("optPanel");
@@ -314,8 +318,8 @@ async function load(){
     "Load courses, then press Optimize to build a timetable.";
 }
 
-// Builds (or rebuilds) the left-side course list. Reads uselessTut so that
-// marking a tutorial useless hides its TUT options immediately.
+// Builds (or rebuilds) the left-side course list. Reads selectedTut/tutAmount so
+// the tutorial checkboxes + "worth attending" dropdown reflect the current state.
 function renderCourseList(){
   const list = document.getElementById("courseList");
   // capture currently-locked sections (so a rebuild from marking one tutorial
@@ -333,21 +337,16 @@ function renderCourseList(){
     head.className = "course-head";
     head.innerHTML = `<code>${c.code}</code> <span class="nm">${c.name}</span>`;
     wrap.appendChild(head);
-    // "Lectures worth attending?" selector under the course name. Marking a
-    // course's lectures as not worth attending leaves them off the timetable.
+    // "Lectures not worth attending" radio under the course name. Unchecked by
+    // default (= lectures ARE worth attending). When checked, none of that
+    // course's lectures are placed on the timetable.
     if (c.sections.some(s => s.teachMethod === "LEC")){
       const lecLbl = document.createElement("label");
       lecLbl.className = "section lec-worth-lbl";
-      const lecSel = document.createElement("select");
-      lecSel.className = "lecWorth";
-      lecSel.dataset.code = c.code;
-      for (const [val, txt] of [["yes","Lectures worth attending"],["no","Lectures not worth attending"]]){
-        const o = document.createElement("option");
-        o.value = val; o.textContent = txt;
-        lecSel.appendChild(o);
-      }
-      lecSel.value = uselessLec.has(c.code) ? "no" : "yes";
-      lecLbl.appendChild(lecSel);
+      lecLbl.innerHTML =
+        `<input type="checkbox" class="lecWorth" data-code="${c.code}"`+
+        (uselessLec.has(c.code) ? ` checked` : ``)+
+        `> <span>Lectures not worth attending</span>`;
       wrap.appendChild(lecLbl);
     }
     // radio groups for PRA and TUT: pick at most one of each to lock.
@@ -399,27 +398,19 @@ function renderCourseList(){
         wrap.appendChild(praSecs);
         continue;
       }
-      // TUT: a dropdown chooses how many tutorials are worth attending (0..N).
-      // Each tutorial section has its own checkbox (default UNCHECKED = not
-      // worth attending). Only exactly that many may be checked; extra checks
-      // are rejected. When 0 are worth attending, the section list is hidden.
+      // TUT: a dropdown chooses how many tutorial SECTIONS are worth attending
+      // (0..number of sections). Each section has its own checkbox; checking it
+      // LOCKS that tutorial into the timetable. You can never check more than the
+      // dropdown amount. Sections left unchecked are still candidates the
+      // optimizer may pick to reach the target count. By default nothing is
+      // checked and the count is 0, so no tutorials are placed until you choose.
       const hdr = document.createElement("div");
       hdr.className = "tm-head";
       hdr.textContent = "Tutorials";
       wrap.appendChild(hdr);
       const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
-      // how many tutorials you must attend = the most meetings any single TUT
-      // section has (e.g. MAT290 sections meet twice -> 2; ECE231 once -> 1).
-      // This caps the "worth attending" dropdown at the real requirement, not
-      // at the number of available sections.
-      const N = tutOpts.reduce((m, s) =>
-        Math.max(m, (s.meetingTimes || []).reduce((sum, mt) =>
-          sum + (mt.repetitionTime === "ONCE_A_WEEK" ? 1
-               : mt.repetitionTime === "TWICE_A_WEEK" ? 2 : 0), 0)), 0);
-      const worthNames = tutOpts
-        .filter(s => !uselessTut.has(c.code + "|" + s.name))
-        .map(s => s.name);
-      const attending = Math.min(worthNames.length, N);
+      const N = tutOpts.length; // you can attend at most all available sections
+      const amount = Math.min(tutAmount.get(c.code) || 0, N);
       const dropLbl = document.createElement("label");
       dropLbl.className = "section tut-drop-lbl";
       const dropSel = document.createElement("select");
@@ -431,22 +422,21 @@ function renderCourseList(){
         o.textContent = String(i);
         dropSel.appendChild(o);
       }
-      dropSel.value = String(attending);
+      dropSel.value = String(amount);
       dropLbl.appendChild(document.createTextNode("Tutorials worth attending: "));
       dropLbl.appendChild(dropSel);
       wrap.appendChild(dropLbl);
-      // tutorial section checkboxes (default unchecked). Hidden entirely when
-      // none are worth attending (attending === 0).
+      // tutorial section checkboxes (default UNCHECKED = not locked). The
+      // optimizer fills the rest up to the target count from the unchecked ones.
       const tutSecs = document.createElement("div");
       tutSecs.className = "tut-sections";
-      if (attending === 0) tutSecs.hidden = true;
       for (const sec of tutOpts){
-        const isWorth = !uselessTut.has(c.code + "|" + sec.name);
+        const isSel = selectedTut.has(c.code + "|" + sec.name);
         const lbl = document.createElement("label");
         lbl.className = "section";
         lbl.innerHTML =
           `<input type="checkbox" class="attendTut" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT"`+
-          (isWorth ? ` checked` : ``)+
+          (isSel ? ` checked` : ``)+
           `> <span class="tm">TUT</span> ${sec.name}`;
         tutSecs.appendChild(lbl);
       }
@@ -468,19 +458,16 @@ function renderCourseList(){
     bestSoFar = null; // locks changed: restart cumulative search
   };
   // per-section "not worth attending": keyed by course|section so a course
-  // with multiple practicals/tutorials can drop only the chosen one(s).
+  // with multiple practicals can drop only the chosen component. Lectures use a
+  // single per-course checkbox; tutorials use the selectedTut/tutAmount model.
   list.onchange = (e) => {
     const box = e.target;
     if (box && box.classList && box.classList.contains("lecWorth")){
       const code = box.dataset.code;
-      if (box.value === "no") uselessLec.add(code);
+      if (box.checked) uselessLec.add(code);
       else uselessLec.delete(code);
       renderCourseList();
       bestSoFar = null; // lecture attendance changed: restart cumulative search
-      return;
-    }
-    if (box.classList.contains("attendTut")){
-      bestSoFar = null; // tutorial attendance changed: restart cumulative search
       return;
     }
     if (box.classList.contains("praWorth")){
@@ -497,54 +484,55 @@ function renderCourseList(){
       bestSoFar = null; // practical attendance changed: restart cumulative search
       return;
     }
-    if (box.classList.contains("tutAttend") || box.classList.contains("attendTut")){
+    if (box.classList.contains("tutAttend")){
+      // dropdown sets the target number of tutorials worth attending (0..N).
       const code = box.dataset.code;
       const course = COURSES.find(c => c.code === code);
-      const tutNames = course.sections
-        .filter(s => s.teachMethod === "TUT")
-        .map(s => s.name)
+      const N = course.sections.filter(s => s.teachMethod === "TUT").length;
+      const k = Math.max(0, Math.min(N, parseInt(box.value, 10) || 0));
+      tutAmount.set(code, k);
+      // if currently-selected tutorials exceed the new target, drop the extras
+      const sel = [...selectedTut].filter(k2 => k2.startsWith(code + "|"))
         .sort((a,b)=>a.localeCompare(b));
-      // number of tutorials that must be worth attending for this course
-      const N = tutNames.reduce((m, n) => {
-        const sec = course.sections.find(s => s.name === n);
-        return Math.max(m, (sec && sec.meetingTimes || []).length);
-      }, 0);
-      const wrap = box.closest(".course");
-      // current worth-attending set, taken from the actual checkbox states
-      let worth = [];
-      if (wrap){
-        for (const cb of wrap.querySelectorAll(".attendTut"))
-          if (cb.checked) worth.push(cb.dataset.sec);
-      }
-      if (box.classList.contains("tutAttend")){
-        // dropdown picks exactly how many tutorials are worth attending
-        const k = Math.max(0, Math.min(N, parseInt(box.value, 10) || 0));
-        if (worth.length > k) worth.length = k;          // trim excess
-        else while (worth.length < k) worth.push(tutNames[worth.length]); // fill
+      while (sel.length > k) selectedTut.delete(sel.pop());
+      renderCourseList();
+      bestSoFar = null; // tutorial target changed: restart cumulative search
+      return;
+    }
+    if (box.classList.contains("attendTut")){
+      // a single tutorial checkbox toggled. Never allow more selected than the
+      // target count; reject the check if it would exceed tutAmount.
+      const code = box.dataset.code, sec = box.dataset.sec;
+      const key = code + "|" + sec;
+      const amount = tutAmount.get(code) || 0;
+      const selCount = [...selectedTut].filter(k => k.startsWith(code + "|")).length;
+      if (box.checked){
+        if (selCount >= amount){ box.checked = false; return; }
+        selectedTut.add(key);
       } else {
-        // a single tutorial checkbox toggled; reject a check beyond N
-        if (box.checked && worth.length > N) box.checked = false;
-        if (box.checked && !worth.includes(box.dataset.sec)) worth.push(box.dataset.sec);
-        if (!box.checked) worth = worth.filter(n => n !== box.dataset.sec);
-      }
-      for (const n of tutNames){
-        if (worth.includes(n)) uselessTut.delete(code + "|" + n);
-        else uselessTut.add(code + "|" + n);
+        selectedTut.delete(key);
       }
       renderCourseList();
-      bestSoFar = null; // tutorials changed: restart cumulative search
+      bestSoFar = null; // tutorial selection changed: restart cumulative search
+      return;
     }
   };
 }
 
-// Returns plan objects. `locked` = the at-most-one LEC and at-most-one PRA the
-// user picked. Any component type not picked is randomized from its remaining
-// sections and still included in the final timetable.
+// Returns plan objects. `locked` = the at-most-one PRA the user picked (and any
+// LEC is never user-locked). Tutorials are NOT plain locks: the user selects a
+// subset (selectedTut) and a target count (tutAmount); the solver must place
+// exactly `tutAmount` non-clashing tutorial sections that include all the
+// selected ones, filling the rest from the optimizer. PRA/Lecture components
+// not locked are randomized from their remaining sections.
 function selectedPlan(){
   const checked = document.querySelectorAll('#courseList input:checked');
   const byCode = {};
   for (const box of checked){
     const code = box.dataset.code, secName = box.dataset.sec, tm = box.dataset.tm;
+    // tutorials are handled via the selectedTut/tutAmount model, NOT as plain
+    // locks; skip them here so they don't end up as a single locked section.
+    if (tm === "TUT") continue;
     const course = COURSES.find(c => c.code === code);
     if (!course) continue;
     const sec = course.sections.find(s => s.name === secName);
@@ -553,25 +541,25 @@ function selectedPlan(){
     byCode[code].locked.push({sec, ms: meetings(sec), tm});
   }
   // build per-course plan objects for every course on the page
-  const isUseless = (tm, code, secName) => (tm === "TUT" ? uselessTut : uselessPra).has(code + "|" + secName);
+  const isUseless = (tm, code, secName) =>
+    tm === "PRA" && uselessPra.has(code + "|" + secName);
   const plans = [];
   for (const course of COURSES){
     const locked = byCode[course.code] ? byCode[course.code].locked : [];
-    // a tutorial marked "not worth attending" is left off the timetable
-    // (free/break time); drop any such locks too. This is per-section, so a
-    // course with 2 tutorials can keep one and drop the other.
     const lockedFiltered = locked.filter(l => !isUseless(l.tm, course.code, l.sec.name));
-    // which component types are already satisfied by a locked section?
+    // which component types are already satisfied by a locked section? (TUT is
+    // never locked as a type; it is filled from the selectedTut + optimizer.)
     const lockedTypes = new Set(lockedFiltered.map(l => l.tm));
-    // pool grouped by component type. PRA/TUT = one option per section.
-    // LEC = options are triples of individual lecture meetings (one from each
-    // weekly slot) chosen from ANY section, ordered 1st < 2nd < 3rd in the week,
-    // non-clashing. This lets lectures be mixed across sections.
+    // pool grouped by component type. PRA = one option per section (locked one
+    // excluded). LEC = options are triples of individual lecture meetings (one
+    // from each weekly slot) chosen from ANY section, ordered 1st < 2nd < 3rd in
+    // the week, non-clashing. TUT is built separately below as combinations.
     const pool = {};
     const lecWorthAttending = !uselessLec.has(course.code);
     for (const sec of course.sections){
       const tm = sec.teachMethod;
-      if ((tm === "TUT" || tm === "PRA") && isUseless(tm, course.code, sec.name)) continue;
+      if (tm === "TUT") continue; // handled separately
+      if (tm === "PRA" && isUseless(tm, course.code, sec.name)) continue;
       if (lockedTypes.has(tm)) continue; // already have this type locked
       if (tm === "LEC"){
         if (!lecWorthAttending) continue; // lectures not worth attending: skip
@@ -582,17 +570,29 @@ function selectedPlan(){
         (pool[tm] = pool[tm] || []).push({sec, ms: meetings(sec)});
       }
     }
-    // precompute clash-free combos over the pool (one option per type).
-    // Result depends only on the pool contents + which types are locked +
-    // which practicals/tutorials are marked useless, all captured in a signature key.
+    // tutorials: build the set of combinations of `amount` sections that include
+    // all the user-locked (selected) tutorials. amount = tutAmount[code] (0 => none).
+    const tutSecs = course.sections.filter(s => s.teachMethod === "TUT");
+    const amount = tutAmount.get(course.code) || 0;
+    const selNames = tutSecs
+      .map(s => s.name)
+      .filter(n => selectedTut.has(course.code + "|" + n))
+      .sort((a,b)=>a.localeCompare(b));
+    if (tutSecs.length && amount > 0){
+      pool.TUT = buildTutOptions(tutSecs, amount, selNames);
+    }
+    // precompute clash-free combos over the pool (one option per type/component).
+    // Result depends only on the pool contents + which types are locked + which
+    // practicals/tutorials are selected, all captured in a signature key.
     const uselessSig = course.sections
-      .filter(s => s.teachMethod === "PRA" || s.teachMethod === "TUT")
+      .filter(s => s.teachMethod === "PRA")
       .map(s => s.name + (isUseless(s.teachMethod, course.code, s.name) ? "!" : ""))
       .join(",");
     const typeKeys = Object.keys(pool);
+    const tutSelSig = (pool.TUT ? pool.TUT.length + ":" + selNames.join("+") : "0");
     const comboSig = course.code + "|" + uselessSig + "|" +
       [...lockedTypes].sort().join(",") + "|" +
-      typeKeys.map(tm => tm + ":" + pool[tm].length).join(",");
+      typeKeys.map(tm => tm + ":" + pool[tm].length).join(",") + "|TUT:" + tutSelSig;
     let combos = _comboCache.get(comboSig);
     if (!combos){
       combos = [[]];
@@ -615,6 +615,34 @@ function selectedPlan(){
     plans.push({code: course.code, name: course.name, locked: lockedFiltered, poolTypes: typeKeys, combos});
   }
   return plans;
+}
+
+// Build every combination of `amount` tutorial sections that INCLUDES all of
+// `selNames` (the user-locked ones). Each combination is one option the solver
+// can pick; the solver always fixes the locked tutorials and lets the optimizer
+// choose the remaining (amount - selNames.length) from the unchecked pool.
+// Combinations whose own meetings clash with each other are discarded.
+function buildTutOptions(tutSecs, amount, selNames){
+  const sel = tutSecs.filter(s => selNames.includes(s.name));
+  if (sel.length > amount) return [];
+  const rest = tutSecs.filter(s => !selNames.includes(s.name));
+  const need = amount - sel.length;
+  const result = [];
+  const pick = (start, chosen) => {
+    if (chosen.length === need){
+      const secs = sel.concat(chosen);
+      const ms = secs.flatMap(s => meetings(s));
+      // internal clash check between the chosen tutorial sections
+      for (let i=0;i<ms.length;i++)
+        for (let j=i+1;j<ms.length;j++)
+          if (overlaps(ms[i], ms[j])) return;
+      result.push({sec: {name: "TUT*"}, ms, secs: secs.map(s => s.name)});
+      return;
+    }
+    for (let i=start; i<rest.length; i++) pick(i+1, chosen.concat(rest[i]));
+  };
+  pick(0, []);
+  return result;
 }
 
 // Build lecture options. "1st / 2nd / 3rd lecture of the week" means a
