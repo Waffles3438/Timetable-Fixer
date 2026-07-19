@@ -5,6 +5,7 @@ parse the academic calendar (engineering.calendar.utoronto.ca) to discover which
 courses a given program/year actually requires. Nothing is hardcoded: the course
 codes are extracted live from the calendar HTML tables.
 """
+import datetime
 import re
 
 import requests
@@ -23,7 +24,20 @@ PROGRAM_SLUG = {
     "mineral": "Mineral-Engineering",
 }
 
-SESSION_CODE = {"fall": "20269", "winter": "20271"}
+
+def active_sessions(today=None):
+    """Return the U of T session codes for the academic year current as of
+    `today` (defaults to today's date). Mirrors scrape.py.
+
+    Fall YYYY   -> "<YYYY>9"
+    Winter Y+1  -> "<Y+1>1"
+    The new academic year opens Jul 1, so from Jul 1 of year Y the active pair
+    is Fall Y9 / Winter (Y+1)1.
+    """
+    if today is None:
+        today = datetime.date.today()
+    fall_year = today.year if today.month >= 7 else today.year - 1
+    return {"fall": f"{fall_year}9", "winter": f"{fall_year + 1}1"}
 
 
 def _section_url(program):
@@ -49,10 +63,13 @@ def _split_year_block(html, year_label, track=None):
     if not m:
         return None
     start = m.start()
-    # Block ends at the next year heading or the 3rd/4th year section.
+    # Block ends at the next year heading, the 3rd/4th year section, or the
+    # "Approved Course Substitutions" list (which follows the Y1 tables and must
+    # NOT be treated as required courses).
     end_m = re.search(
         r"THIRD AND FOURTH YEAR|FOURTH YEAR|"
-        r"(?:SECOND|THIRD|FOURTH) YEAR (?:COMPUTER|ELECTRICAL) ENGINEERING",
+        r"(?:SECOND|THIRD|FOURTH) YEAR (?:COMPUTER|ELECTRICAL) ENGINEERING|"
+        r"Approved Course Substitutions",
         html[start + len(heading):],
     )
     end = start + len(heading) + end_m.start() if end_m else len(html)
@@ -122,6 +139,7 @@ def get_program_courses(program, year, track=None):
 
 if __name__ == "__main__":
     import json
-    for tr in (None, "computer", "electrical"):
-        res = get_program_courses("ece", "2", track=tr)
-        print("track:", tr, json.dumps(res))
+    for tr in ("computer", "electrical"):
+        for yr in ("1", "2"):
+            res = get_program_courses(tr, yr, track=tr)
+            print(f"track={tr} year={yr}: {json.dumps(res)}")

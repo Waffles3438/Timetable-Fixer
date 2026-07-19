@@ -12,7 +12,8 @@ Common flags:
                            (computer->ECE297, electrical->ECE295)
     --year <n>            e.g. 2    -> year level for --curriculum
     --session fall|winter|both
-                         fall=20269 (Fall 2026), winter=20271 (Winter 2027)
+                          fall=<YYYY>9 (current Fall), winter=<YYYY+1>1 (current Winter);
+                          codes auto-derived from today's date (see active_sessions)
     --department <code>   e.g. ece  -> matches course-code prefix (ECE)
     --codes <c1> <c2>     keep exact course codes
     --prefix <p1> <p2>    keep codes starting with any prefix
@@ -23,6 +24,7 @@ Examples:
     python scrape.py --codes ECE201H1 MAT290H1
 """
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -118,11 +120,37 @@ DEPARTMENT_PREFIX = {
     "mat": "MAT",
 }
 
-SESSION_CODES = {
-    "fall": ["20269"],
-    "winter": ["20271"],
-    "both": ["20269", "20271"],
-}
+def active_sessions(today=None):
+    """Return the U of T session codes for the academic year that is *current*
+    as of `today` (defaults to today's date).
+
+    U of T session-code scheme:
+      Fall YYYY   -> "<YYYY>9"   (e.g. Fall 2026 -> 20269)
+      Winter Y+1  -> "<Y+1>1"    (e.g. Winter 2027 -> 20271)
+
+    The new academic year opens on July 1. A Fall session runs Sep-Dec and is
+    the "current" one until Jan 31; a Winter session runs Jan-Apr and is current
+    until Apr 30. So as soon as it is July 1 of year Y, we move to the Y -> Y+1
+    academic year (Fall Y9, Winter (Y+1)1).
+
+    Returns {"fall": ["<fallCode>"], "winter": ["<winterCode>"]} so the rest of
+    the pipeline can stay unchanged.
+    """
+    if today is None:
+        today = datetime.date.today()
+    # Academic year Y->Y+1 becomes current on Jul 1 of Y.
+    if today.month >= 7:
+        fall_year = today.year
+    else:
+        fall_year = today.year - 1
+    fall_code = f"{fall_year}9"
+    winter_code = f"{fall_year + 1}1"
+    return {"fall": [fall_code], "winter": [winter_code]}
+
+
+# "both" is handled by running the fall and winter scrapes separately so each
+# cached file gets its own semester suffix (e.g. computer-1-fall.json).
+BOTH_SESSIONS = ["fall", "winter"]
 
 # Year -> course-level code used by the ttb API (year 1 = 100/A, year 2 = 200/B).
 YEAR_LEVEL = {"1": ["100/A"], "2": ["200/B"], "3": ["300/C"], "4": ["400/D"]}
@@ -169,7 +197,7 @@ def main():
     parser.add_argument("--sessions", nargs="+", default=None,
                         help="Session codes, e.g. 20269 20271 (overrides --session)")
     parser.add_argument("--session", choices=["fall", "winter", "both"], default="both",
-                        help="Semester selector (fall=20269, winter=20271)")
+                        help="Semester selector (codes auto-derived from today's date)")
     parser.add_argument("--department", default=None,
                         help="Department code, e.g. ece (maps to course-code prefix)")
     parser.add_argument("--year", default=None,
@@ -189,7 +217,22 @@ def main():
     parser.add_argument("--out", default="courses.json")
     args = parser.parse_args()
 
-    sessions = args.sessions if args.sessions else SESSION_CODES[args.session]
+    # "both" runs the fall and winter scrapes as two separate passes, each
+    # writing its own cached file (e.g. computer-1-fall.json / -winter.json).
+    sessions_to_run = BOTH_SESSIONS if args.session == "both" else [args.session]
+    for session in sessions_to_run:
+        scrape_session(args, session)
+
+
+def scrape_session(args, session):
+    """Run one scrape for a single `session` ('fall' or 'winter')."""
+    args.session = session  # so cached_filename / curriculum use the right semester
+    # Explicit --sessions override, else derive the current academic year's
+    # codes dynamically from today's date (auto-advances on Jul 1).
+    if args.sessions:
+        sessions = list(args.sessions)
+    else:
+        sessions = active_sessions()[session]
 
     # Pick the course level: explicit --levels, else infer from --year.
     levels = args.levels
@@ -220,17 +263,13 @@ def main():
             sys.exit(1)
         track = args.curriculum if args.curriculum in ("computer", "electrical") else None
         prog = get_program_courses(args.curriculum, args.year, track=track)
-        # restrict to the requested session if not "both"
-        if args.session != "both":
-            curriculum_codes = set(prog.get(args.session, []))
-        else:
-            curriculum_codes = set().union(*prog.values()) if prog else set()
+        curriculum_codes = set(prog.get(session, []))
         if not curriculum_codes:
             print(f"No {args.year}-year courses found for '{args.curriculum}' "
-                  f"in session '{args.session}'.", file=sys.stderr)
+                  f"in session '{session}'.", file=sys.stderr)
             sys.exit(1)
         print(f"  curriculum {args.curriculum} year {args.year} "
-              f"({args.session}): {len(curriculum_codes)} courses")
+              f"({session}): {len(curriculum_codes)} courses")
 
     print(f"Fetching division={args.divisions} levels={levels} "
           f"sessions={sessions} ...")
