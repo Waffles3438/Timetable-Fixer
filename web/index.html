@@ -476,6 +476,20 @@ function renderCourseList(){
       bestSoFar = null; // tutorial attendance changed: restart cumulative search
       return;
     }
+    if (box.classList.contains("praWorth")){
+      const code = box.dataset.code;
+      const course = COURSES.find(c => c.code === code);
+      const praNames = course.sections
+        .filter(s => s.teachMethod === "PRA")
+        .map(s => s.name);
+      for (const n of praNames){
+        if (box.checked) uselessPra.delete(code + "|" + n);
+        else uselessPra.add(code + "|" + n);
+      }
+      renderCourseList();
+      bestSoFar = null; // practical attendance changed: restart cumulative search
+      return;
+    }
     if (box.classList.contains("tutAttend") || box.classList.contains("tutDropPick")){
       const code = box.dataset.code;
       const course = COURSES.find(c => c.code === code);
