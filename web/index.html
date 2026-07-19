@@ -297,6 +297,12 @@ async function load(){
     return {code, name, sections, combos};
   });
 
+  // tutorials default to NOT worth attending (unchecked); only the exact number
+  // the user selects via the "Tutorials worth attending" dropdown are kept.
+  for (const course of COURSES)
+    for (const s of course.sections)
+      if (s.teachMethod === "TUT") uselessTut.add(course.code + "|" + s.name);
+
   renderCourseList();
   const panel = document.getElementById("optPanel");
   if (panel) panel.hidden = false;
@@ -363,7 +369,7 @@ function renderCourseList(){
         // the section radios are hidden.
         const hdr = document.createElement("div");
         hdr.className = "tm-head";
-        hdr.textContent = "PRA (pick one to lock)";
+        hdr.textContent = "Practicals";
         wrap.appendChild(hdr);
         const praSections = groups.PRA;
         const praUseless = praSections.every(s => uselessPra.has(c.code + "|" + s.name));
@@ -393,22 +399,27 @@ function renderCourseList(){
         wrap.appendChild(praSecs);
         continue;
       }
-      // TUT: a dropdown picks how many tutorials are ATTENDING (0..N). The rest
-      // are "not worth attending" and dropped. When some are dropped, pickers
-      // let you choose WHICH tutorials to drop; the attending ones are shown
-      // and checked (placed in the timetable).
+      // TUT: a dropdown chooses how many tutorials are worth attending (0..N).
+      // Each tutorial section has its own checkbox (default UNCHECKED = not
+      // worth attending). Only exactly that many may be checked; extra checks
+      // are rejected. When 0 are worth attending, the section list is hidden.
       const hdr = document.createElement("div");
       hdr.className = "tm-head";
-      hdr.textContent = "TUT";
+      hdr.textContent = "Tutorials";
       wrap.appendChild(hdr);
       const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
       // how many tutorials you must attend = the most meetings any single TUT
       // section has (e.g. MAT290 sections meet twice -> 2; ECE231 once -> 1).
-      // This caps the "TUTs attending" dropdown at the real requirement, not
+      // This caps the "worth attending" dropdown at the real requirement, not
       // at the number of available sections.
-      const N = tutOpts.reduce((m, s) => Math.max(m, (s.meetingTimes || []).length), 0);
-      const dropped = tutOpts.filter(s => uselessTut.has(c.code + "|" + s.name));
-      const attending = N - dropped.length;
+      const N = tutOpts.reduce((m, s) =>
+        Math.max(m, (s.meetingTimes || []).reduce((sum, mt) =>
+          sum + (mt.repetitionTime === "ONCE_A_WEEK" ? 1
+               : mt.repetitionTime === "TWICE_A_WEEK" ? 2 : 0), 0)), 0);
+      const worthNames = tutOpts
+        .filter(s => !uselessTut.has(c.code + "|" + s.name))
+        .map(s => s.name);
+      const attending = Math.min(worthNames.length, N);
       const dropLbl = document.createElement("label");
       dropLbl.className = "section tut-drop-lbl";
       const dropSel = document.createElement("select");
@@ -421,37 +432,25 @@ function renderCourseList(){
         dropSel.appendChild(o);
       }
       dropSel.value = String(attending);
-      dropLbl.appendChild(document.createTextNode("TUTs attending: "));
+      dropLbl.appendChild(document.createTextNode("Tutorials worth attending: "));
       dropLbl.appendChild(dropSel);
       wrap.appendChild(dropLbl);
-      // pickers to choose WHICH tutorials to drop (one per dropped tutorial).
-      // When none are worth attending (attending === 0) there is nothing to
-      // choose, so skip the pickers.
-      if (attending > 0){
-        for (let i=0; i<dropped.length; i++){
-          const pick = document.createElement("select");
-          pick.className = "tutDropPick";
-          pick.dataset.code = c.code;
-          pick.dataset.idx = String(i);
-          for (const s of tutOpts){
-            const o = document.createElement("option");
-            o.value = s.name; o.textContent = s.name;
-            pick.appendChild(o);
-          }
-          pick.value = dropped[i].name;
-          wrap.appendChild(pick);
-        }
-      }
-      // attending tutorials: shown and attended (checked by default)
+      // tutorial section checkboxes (default unchecked). Hidden entirely when
+      // none are worth attending (attending === 0).
+      const tutSecs = document.createElement("div");
+      tutSecs.className = "tut-sections";
+      if (attending === 0) tutSecs.hidden = true;
       for (const sec of tutOpts){
-        if (uselessTut.has(c.code + "|" + sec.name)) continue;
+        const isWorth = !uselessTut.has(c.code + "|" + sec.name);
         const lbl = document.createElement("label");
         lbl.className = "section";
         lbl.innerHTML =
-          `<input type="checkbox" class="attendTut" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT" checked>`+
-          ` <span class="tm">TUT</span> ${sec.name}`;
-        wrap.appendChild(lbl);
+          `<input type="checkbox" class="attendTut" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT"`+
+          (isWorth ? ` checked` : ``)+
+          `> <span class="tm">TUT</span> ${sec.name}`;
+        tutSecs.appendChild(lbl);
       }
+      wrap.appendChild(tutSecs);
     }
     list.appendChild(wrap);
   }
@@ -498,30 +497,40 @@ function renderCourseList(){
       bestSoFar = null; // practical attendance changed: restart cumulative search
       return;
     }
-    if (box.classList.contains("tutAttend") || box.classList.contains("tutDropPick")){
+    if (box.classList.contains("tutAttend") || box.classList.contains("attendTut")){
       const code = box.dataset.code;
       const course = COURSES.find(c => c.code === code);
       const tutNames = course.sections
         .filter(s => s.teachMethod === "TUT")
         .map(s => s.name)
         .sort((a,b)=>a.localeCompare(b));
+      // number of tutorials that must be worth attending for this course
       const N = tutNames.reduce((m, n) => {
         const sec = course.sections.find(s => s.name === n);
         return Math.max(m, (sec && sec.meetingTimes || []).length);
       }, 0);
-      // clear this course's dropped tutorials, then re-derive from the controls
-      for (const n of tutNames) uselessTut.delete(code + "|" + n);
       const wrap = box.closest(".course");
-      const picks = wrap.querySelectorAll(".tutDropPick");
-      let chosen = [];
-      for (const p of picks) if (p.value) chosen.push(p.value);
-      if (box.classList.contains("tutAttend")){
-        // dropdown = number attending; drop the first (N - attending) by default
-        const attending = parseInt(box.value, 10);
-        const dropN = Math.max(0, N - attending);
-        chosen = tutNames.slice(0, dropN);
+      // current worth-attending set, taken from the actual checkbox states
+      let worth = [];
+      if (wrap){
+        for (const cb of wrap.querySelectorAll(".attendTut"))
+          if (cb.checked) worth.push(cb.dataset.sec);
       }
-      for (const n of chosen) uselessTut.add(code + "|" + n);
+      if (box.classList.contains("tutAttend")){
+        // dropdown picks exactly how many tutorials are worth attending
+        const k = Math.max(0, Math.min(N, parseInt(box.value, 10) || 0));
+        if (worth.length > k) worth.length = k;          // trim excess
+        else while (worth.length < k) worth.push(tutNames[worth.length]); // fill
+      } else {
+        // a single tutorial checkbox toggled; reject a check beyond N
+        if (box.checked && worth.length > N) box.checked = false;
+        if (box.checked && !worth.includes(box.dataset.sec)) worth.push(box.dataset.sec);
+        if (!box.checked) worth = worth.filter(n => n !== box.dataset.sec);
+      }
+      for (const n of tutNames){
+        if (worth.includes(n)) uselessTut.delete(code + "|" + n);
+        else uselessTut.add(code + "|" + n);
+      }
       renderCourseList();
       bestSoFar = null; // tutorials changed: restart cumulative search
     }
