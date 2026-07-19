@@ -24,8 +24,9 @@
   .tm-head { font-size:.76rem; font-weight:600; color:#666; margin:6px 0 2px; }
   .section { display:flex; align-items:center; gap:8px; padding:3px 0 3px 14px;
              font-size:.88rem; }
-  .section .tm { display:inline-block; min-width:34px; color:#0d6efd;
-                 font-size:.72rem; font-weight:600; }
+   .section .tm { display:inline-block; min-width:34px; color:#0d6efd;
+                  font-size:.72rem; font-weight:600; }
+   .lec-worth-lbl { padding-left:14px; font-size:.82rem; color:#444; }
   button { background:var(--accent); color:#fff; border:none; border-radius:8px;
            padding:10px 14px; font-size:.95rem; cursor:pointer; }
   button:hover { filter:brightness(1.05); }
@@ -172,10 +173,16 @@ function clashFree(blocks, chosen){
 function shuffle(a){ return a.sort(()=>Math.random()-0.5); }
 
 let COURSES = [];
-// courses whose tutorial (TUT) the user marked "not worth attending":
-// those TUTs are left off the timetable (free/break time that may be
-// filled by another class or left empty).
+// course sections (tutorials) the user marked "not worth attending", keyed by
+// "courseCode|sectionName". Those sections are left off the timetable
+// (free/break time that may be filled by another class or left empty).
 const uselessTut = new Set();
+// courses whose practicals (PRA) are marked "not worth attending", keyed by
+// course code. When set, the whole PRA component is left off the timetable.
+const uselessPra = new Set();
+// courses whose lectures are marked "not worth attending", keyed by course
+// code. When set, none of that course's lectures are placed on the timetable.
+const uselessLec = new Set();
 // Best plan found across Optimize presses (cumulative): only re-render when a
 // new search beats it. Reset whenever the inputs (locks / options) change.
 let bestSoFar = null;
@@ -199,6 +206,7 @@ function cacheKey(){
 function resetOptimizerState(){
   bestSoFar = null; bestSoFarOpts = null; bestSoFarPlans = null;
   _lecOptCache.clear(); _comboCache.clear();
+  uselessTut.clear(); uselessPra.clear(); uselessLec.clear();
   for (const id of ["optCampus","optLunch","optEarly","optLate"])
     if (document.getElementById(id)) document.getElementById(id).checked = false;
   const lunchWrap = document.getElementById("lunchWrap");
@@ -319,10 +327,27 @@ function renderCourseList(){
     head.className = "course-head";
     head.innerHTML = `<code>${c.code}</code> <span class="nm">${c.name}</span>`;
     wrap.appendChild(head);
+    // "Lectures worth attending?" selector under the course name. Marking a
+    // course's lectures as not worth attending leaves them off the timetable.
+    if (c.sections.some(s => s.teachMethod === "LEC")){
+      const lecLbl = document.createElement("label");
+      lecLbl.className = "section lec-worth-lbl";
+      const lecSel = document.createElement("select");
+      lecSel.className = "lecWorth";
+      lecSel.dataset.code = c.code;
+      for (const [val, txt] of [["yes","Lectures worth attending"],["no","Lectures not worth attending"]]){
+        const o = document.createElement("option");
+        o.value = val; o.textContent = txt;
+        lecSel.appendChild(o);
+      }
+      lecSel.value = uselessLec.has(c.code) ? "no" : "yes";
+      lecLbl.appendChild(lecSel);
+      wrap.appendChild(lecLbl);
+    }
     // radio groups for PRA and TUT: pick at most one of each to lock.
-    // LEC is always randomized and not selectable. When a tutorial is marked
-    // useless it is hidden entirely from the list.
-    const tutUseless = uselessTut.has(c.code);
+    // LEC is always randomized and not selectable. Each PRA/TUT section has
+    // its own "not worth attending" checkbox, so you can drop just the
+    // section(s) you don't want while keeping the others.
     const tmOrder = {"PRA": 0, "TUT": 1};
     const groups = {};
     for (const s of c.sections){
@@ -331,34 +356,92 @@ function renderCourseList(){
     }
     const tms = Object.keys(groups).sort((a,b)=>(tmOrder[a]-tmOrder[b]));
     for (const tm of tms){
+      if (tm === "PRA"){
+        // practicals: pick at most one to lock (radio). A single "worth
+        // attending" checkbox per course decides whether the practicals are
+        // attended at all; if not, the whole PRA component is dropped.
+        const hdr = document.createElement("div");
+        hdr.className = "tm-head";
+        hdr.textContent = "PRA (pick one to lock)";
+        wrap.appendChild(hdr);
+        const praWorth = document.createElement("label");
+        praWorth.className = "section pra-worth-lbl";
+        const praSections = groups.PRA;
+        const anyPraUseless = uselessPra.has(c.code);
+        praWorth.innerHTML =
+          `<input type="checkbox" class="praWorth" data-code="${c.code}"`+
+          (anyPraUseless ? `` : ` checked`)+
+          `> <span>Worth attending</span>`;
+        wrap.appendChild(praWorth);
+        const opts = groups.PRA.slice().sort((a,b)=>a.name.localeCompare(b.name));
+        const kept = lockedByCode[c.code] && lockedByCode[c.code].PRA;
+        for (const sec of opts){
+          const lbl = document.createElement("label");
+          lbl.className = "section";
+          const isLocked = sec.name === kept;
+          lbl.innerHTML =
+            `<input type="radio" name="${c.code}-PRA" data-code="${c.code}" data-sec="${sec.name}" data-tm="PRA"`+
+            (isLocked ? " checked" : "")+
+            `> <span class="tm">PRA</span> ${sec.name}`;
+          wrap.appendChild(lbl);
+        }
+        continue;
+      }
+      // TUT: a dropdown picks how many tutorials are ATTENDING (0..N). The rest
+      // are "not worth attending" and dropped. When some are dropped, pickers
+      // let you choose WHICH tutorials to drop; the attending ones are shown
+      // and checked (placed in the timetable).
       const hdr = document.createElement("div");
       hdr.className = "tm-head";
-      hdr.textContent = tm + " (pick one to lock)";
+      hdr.textContent = "TUT";
       wrap.appendChild(hdr);
-      // "Mark tutorial as not worth attending" sits at the TOP of the TUT
-      // list. It is never hidden by its own selection. When checked, the
-      // TUT#### radio options below are hidden but the header + this
-      // checkbox remain visible.
-      if (tm === "TUT"){
-        const skipLbl = document.createElement("label");
-        skipLbl.className = "section skip-tut";
-        skipLbl.innerHTML =
-          `<input type="checkbox" class="skipTut" data-code="${c.code}"`+
-          (tutUseless ? " checked" : "")+
-          `> Mark tutorial as not worth attending`;
-        wrap.appendChild(skipLbl);
+      const tutOpts = groups.TUT.slice().sort((a,b)=>a.name.localeCompare(b.name));
+      const N = tutOpts.length;
+      // A course only ever requires a small number of tutorials (1 or 2); the
+      // data lists many sections to choose from, so cap the "attending" count
+      // at MAX_TUTS rather than at the (large) number of sections.
+      const MAX_TUTS = 2;
+      const maxAttend = Math.min(N, MAX_TUTS);
+      const dropped = tutOpts.filter(s => uselessTut.has(c.code + "|" + s.name));
+      let attending = N - dropped.length;
+      if (attending > maxAttend) attending = maxAttend; // clamp stale state
+      const dropLbl = document.createElement("label");
+      dropLbl.className = "section tut-drop-lbl";
+      const dropSel = document.createElement("select");
+      dropSel.className = "tutAttend";
+      dropSel.dataset.code = c.code;
+      for (let i=0; i<=maxAttend; i++){
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = String(i);
+        dropSel.appendChild(o);
       }
-      if (tm === "TUT" && tutUseless) continue; // hide TUT#### options only
-      const opts = groups[tm].slice().sort((a,b)=>a.name.localeCompare(b.name));
-      const kept = lockedByCode[c.code] && lockedByCode[c.code][tm];
-      for (const sec of opts){
+      dropSel.value = String(attending);
+      dropLbl.appendChild(document.createTextNode("TUTs attending: "));
+      dropLbl.appendChild(dropSel);
+      wrap.appendChild(dropLbl);
+      // pickers to choose WHICH tutorials to drop (one per dropped tutorial)
+      for (let i=0; i<dropped.length; i++){
+        const pick = document.createElement("select");
+        pick.className = "tutDropPick";
+        pick.dataset.code = c.code;
+        pick.dataset.idx = String(i);
+        for (const s of tutOpts){
+          const o = document.createElement("option");
+          o.value = s.name; o.textContent = s.name;
+          pick.appendChild(o);
+        }
+        pick.value = dropped[i].name;
+        wrap.appendChild(pick);
+      }
+      // attending tutorials: shown and attended (checked by default)
+      for (const sec of tutOpts){
+        if (uselessTut.has(c.code + "|" + sec.name)) continue;
         const lbl = document.createElement("label");
         lbl.className = "section";
-        const isLocked = sec.name === kept;
         lbl.innerHTML =
-          `<input type="radio" name="${c.code}-${tm}" data-code="${c.code}" data-sec="${sec.name}" data-tm="${tm}"`+
-          (isLocked ? " checked" : "")+
-          `> <span class="tm">${tm}</span> ${sec.name}`;
+          `<input type="checkbox" class="attendTut" data-code="${c.code}" data-sec="${sec.name}" data-tm="TUT" checked>`+
+          ` <span class="tm">TUT</span> ${sec.name}`;
         wrap.appendChild(lbl);
       }
     }
@@ -370,20 +453,50 @@ function renderCourseList(){
   // clicking an already-selected radio again toggles it off (unselect)
   list.onclick = (e) => {
     const box = e.target;
-    if (box && box.type === "radio" && box._wasChecked){
+    if (box && box.type === "radio" && box._wasChecked && !box.classList.contains("lecWorth")){
       box.checked = false;
     }
     for (const r of list.querySelectorAll('input[type=radio]'))
       r._wasChecked = r.checked;
     bestSoFar = null; // locks changed: restart cumulative search
   };
-  // "mark tutorial as not worth attending": update the set, then rebuild the
-  // list so the TUT options hide/show immediately.
+  // per-section "not worth attending": keyed by course|section so a course
+  // with multiple practicals/tutorials can drop only the chosen one(s).
   list.onchange = (e) => {
     const box = e.target;
-    if (box && box.classList && box.classList.contains("skipTut")){
-      if (box.checked) uselessTut.add(box.dataset.code);
-      else uselessTut.delete(box.dataset.code);
+    if (box && box.classList && box.classList.contains("lecWorth")){
+      const code = box.dataset.code;
+      if (box.value === "no") uselessLec.add(code);
+      else uselessLec.delete(code);
+      renderCourseList();
+      bestSoFar = null; // lecture attendance changed: restart cumulative search
+      return;
+    }
+    if (box.classList.contains("attendTut")){
+      bestSoFar = null; // tutorial attendance changed: restart cumulative search
+      return;
+    }
+    if (box.classList.contains("tutAttend") || box.classList.contains("tutDropPick")){
+      const code = box.dataset.code;
+      const course = COURSES.find(c => c.code === code);
+      const tutNames = course.sections
+        .filter(s => s.teachMethod === "TUT")
+        .map(s => s.name)
+        .sort((a,b)=>a.localeCompare(b));
+      const N = tutNames.length;
+      // clear this course's dropped tutorials, then re-derive from the controls
+      for (const n of tutNames) uselessTut.delete(code + "|" + n);
+      const wrap = box.closest(".course");
+      const picks = wrap.querySelectorAll(".tutDropPick");
+      let chosen = [];
+      for (const p of picks) if (p.value) chosen.push(p.value);
+      if (box.classList.contains("tutAttend")){
+        // dropdown = number attending; drop the first (N - attending) by default
+        const attending = parseInt(box.value, 10);
+        const dropN = Math.max(0, N - attending);
+        chosen = tutNames.slice(0, dropN);
+      }
+      for (const n of chosen) uselessTut.add(code + "|" + n);
       renderCourseList();
       bestSoFar = null; // tutorials changed: restart cumulative search
     }
@@ -406,15 +519,14 @@ function selectedPlan(){
     byCode[code].locked.push({sec, ms: meetings(sec), tm});
   }
   // build per-course plan objects for every course on the page
+  const isUseless = (tm, code, secName) => (tm === "TUT" ? uselessTut : uselessPra).has(code + "|" + secName);
   const plans = [];
   for (const course of COURSES){
     const locked = byCode[course.code] ? byCode[course.code].locked : [];
-    // a course whose tutorial is marked useless gets its TUT left off the
-    // timetable entirely (free/break time), so drop any TUT locks too.
-    const tutUseless = uselessTut.has(course.code);
-    const lockedFiltered = tutUseless
-      ? locked.filter(l => l.tm !== "TUT")
-      : locked;
+    // a tutorial marked "not worth attending" is left off the timetable
+    // (free/break time); drop any such locks too. This is per-section, so a
+    // course with 2 tutorials can keep one and drop the other.
+    const lockedFiltered = locked.filter(l => !isUseless(l.tm, course.code, l.sec.name));
     // which component types are already satisfied by a locked section?
     const lockedTypes = new Set(lockedFiltered.map(l => l.tm));
     // pool grouped by component type. PRA/TUT = one option per section.
@@ -422,11 +534,13 @@ function selectedPlan(){
     // weekly slot) chosen from ANY section, ordered 1st < 2nd < 3rd in the week,
     // non-clashing. This lets lectures be mixed across sections.
     const pool = {};
+    const lecWorthAttending = !uselessLec.has(course.code);
     for (const sec of course.sections){
       const tm = sec.teachMethod;
-      if (tm === "TUT" && tutUseless) continue; // skip useless tutorials
+      if ((tm === "TUT" || tm === "PRA") && isUseless(tm, course.code, sec.name)) continue;
       if (lockedTypes.has(tm)) continue; // already have this type locked
       if (tm === "LEC"){
+        if (!lecWorthAttending) continue; // lectures not worth attending: skip
         const subj = course.sections.filter(s => s.teachMethod === "LEC");
         pool.LEC = buildLecOptions(subj);
       } else {
@@ -436,9 +550,13 @@ function selectedPlan(){
     }
     // precompute clash-free combos over the pool (one option per type).
     // Result depends only on the pool contents + which types are locked +
-    // tutorial-useless state, all captured in a signature key.
+    // which practicals/tutorials are marked useless, all captured in a signature key.
+    const uselessSig = course.sections
+      .filter(s => s.teachMethod === "PRA" || s.teachMethod === "TUT")
+      .map(s => s.name + (isUseless(s.teachMethod, course.code, s.name) ? "!" : ""))
+      .join(",");
     const typeKeys = Object.keys(pool);
-    const comboSig = course.code + "|" + tutUseless + "|" +
+    const comboSig = course.code + "|" + uselessSig + "|" +
       [...lockedTypes].sort().join(",") + "|" +
       typeKeys.map(tm => tm + ":" + pool[tm].length).join(",");
     let combos = _comboCache.get(comboSig);
