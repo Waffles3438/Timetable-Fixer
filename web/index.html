@@ -446,9 +446,10 @@ function renderCourseList(){
           (isLocked ? " checked" : "")+
           `> <span class="tm">TUT</span> ${sec.name}${tutFreq(sec)}`;
         tutSecs.appendChild(lbl);
-        // when a TUT section is selected, show one toggle per class so the user
-        // can pick which meetings to attend (uncheck = skip that class).
-        if (isLocked){
+        // when a multi-meeting TUT section is selected, show one toggle per
+        // class so the user can pick which meetings to attend. Single-meeting
+        // sections need no per-class selector.
+        if (isLocked && secMts.length > 1){
           const wrap2 = document.createElement("div");
           wrap2.className = "tut-classes";
           const chosenKey = c.code + "|" + sec.name;
